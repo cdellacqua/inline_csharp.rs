@@ -171,6 +171,25 @@ fn java_runtime_list_string() {
 	assert_eq!(v, vec!["foo".to_string(), "bar".to_string(), "baz".to_string()]);
 }
 
+// ── java! with abstract class + subclass (OOP) ───────────────────────────────
+
+#[test]
+fn java_runtime_abstract_class_override() {
+	let sound: String = java! {
+		abstract class Animal {
+			abstract String sound();
+		}
+		class Dog extends Animal {
+			@Override
+			String sound() { return "woof"; }
+		}
+		public static String run() {
+			return new Dog().sound();
+		}
+	}.unwrap();
+	assert_eq!(sound, "woof");
+}
+
 // ── java! with empty array ────────────────────────────────────────────────────
 
 #[test]

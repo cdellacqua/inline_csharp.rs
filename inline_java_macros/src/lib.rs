@@ -549,8 +549,12 @@ fn array_serialize_loop(s: ScalarType, iter_type: &str) -> String {
 struct ParsedJava {
 	/// The import/package section verbatim from the original source.
 	imports: String,
-	/// The method body verbatim from the original source, with every `'var`
-	/// replaced by `_RUST_var`.
+	/// Any class/interface/enum declarations written before `run()`.
+	/// Emitted as top-level Java types, outside the generated wrapper class.
+	outer: String,
+	/// The `run()` method and everything after it, verbatim from the original
+	/// source, with every `'var` replaced by `_RUST_var`.
+	/// Placed inside the generated wrapper class.
 	body: String,
 	/// Captured Rust variables: name → original Ident (for span / quoting).
 	vars: BTreeMap<String, Ident>,
@@ -678,8 +682,9 @@ fn reconstruct_body_fallback(
 }
 
 /// Scan `tts` for the first `public static <T> run` pattern and return the
-/// corresponding `JavaType`.
-fn parse_run_return_type(tts: &[TokenTree]) -> Result<JavaType, String> {
+/// corresponding `JavaType` together with the index of the `public` token
+/// within `tts` (so the caller can split outer declarations from the method).
+fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String> {
 	for i in 0..tts.len().saturating_sub(3) {
 		if !matches!(&tts[i], TokenTree::Ident(id) if id == "public") {
 			continue;
@@ -694,7 +699,7 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<JavaType, String> {
 
 			if matches!(&tts.get(i + 3), Some(TokenTree::Ident(id)) if id == "run") {
 				return ScalarType::from_primitive_name(&type_name)
-					.map(JavaType::Scalar)
+					.map(|s| (JavaType::Scalar(s), i))
 					.ok_or_else(|| {
 						format!(
 							"inline_java: `run()` return type `{type_name}` is not supported; \
@@ -715,7 +720,7 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<JavaType, String> {
 				&& matches!(&tts.get(i + 4), Some(TokenTree::Ident(id)) if id == "run")
 			{
 				return ScalarType::from_primitive_name(&type_name)
-					.map(JavaType::Array)
+					.map(|s| (JavaType::Array(s), i))
 					.ok_or_else(|| {
 						format!(
 							"inline_java: `run()` array element type `{type_name}` is not supported; \
@@ -735,7 +740,7 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<JavaType, String> {
 				&& matches!(&tts.get(i + 6), Some(TokenTree::Ident(id)) if id == "run")
 			{
 				return ScalarType::from_boxed_name(&inner_name)
-					.map(JavaType::List)
+					.map(|s| (JavaType::List(s), i))
 					.ok_or_else(|| {
 						format!(
 							"inline_java: `run()` List element type `{inner_name}` is not supported; \
@@ -758,7 +763,7 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<JavaType, String> {
 		{
 			let inner_name = inner_id.to_string();
 			return ScalarType::from_boxed_name(&inner_name)
-				.map(JavaType::List)
+				.map(|s| (JavaType::List(s), i))
 				.ok_or_else(|| {
 					format!(
 						"inline_java: `run()` List element type `{inner_name}` is not supported; \
@@ -818,7 +823,10 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 	let body_start = first_body_idx.unwrap_or(tts.len());
 
 	// ── Parse return type from body tokens ──────────────────────────────
-	let java_type = parse_run_return_type(&tts[body_start..])?;
+	// Also returns the index (relative to body_start) of the `public` token
+	// so we can split outer class declarations from the run() method.
+	let (java_type, run_rel_idx) = parse_run_return_type(&tts[body_start..])?;
+	let run_abs_idx = body_start + run_rel_idx;
 
 	// ── Collect vars from body (recursively into Groups) ────────────────
 	let mut vars: BTreeMap<String, Ident> = BTreeMap::new();
@@ -830,36 +838,50 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 
 	// ── Extract text via source_text() ──────────────────────────────────
 
-	// imports: span from first import keyword to last ';'
-	let imports = match (first_import_idx, last_import_end_idx) {
-		(Some(fi), Some(le)) => tts[fi]
+	// Helper: get source text for a contiguous slice of tts, with fallback.
+	let slice_text = |lo: usize, hi: usize| -> String {
+		if lo >= hi {
+			return String::new();
+		}
+		tts[lo]
 			.span()
-			.join(tts[le].span())
+			.join(tts[hi - 1].span())
 			.and_then(|s| s.source_text())
 			.unwrap_or_else(|| {
-				// Fallback: token-based reconstruction (loses some whitespace).
-				tts[fi..=le]
+				tts[lo..hi]
 					.iter()
 					.map(|tt| tt.to_string())
 					.collect::<Vec<_>>()
 					.join(" ")
-			}),
+			})
+	};
+
+	// imports: span from first import keyword to last ';'
+	let imports = match (first_import_idx, last_import_end_idx) {
+		(Some(fi), Some(le)) => slice_text(fi, le + 1),
 		_ => String::new(),
 	};
 
-	// body: span from first body token to last token, then substitute vars.
-	let body = if body_start < tts.len() {
-		let start_span = tts[body_start].span();
+	// outer: any tokens between the end of imports and `public static T run`
+	let outer = slice_text(body_start, run_abs_idx);
+
+	// body: from `public static T run` to end, with var substitution.
+	let body = if run_abs_idx < tts.len() {
+		let start_span = tts[run_abs_idx].span();
 		let end_span = tts.last().unwrap().span();
 		let body_start_lc = start_span.start();
 
+		// occurrences is sorted; skip any that fall in the outer section.
+		let first_in_body = occurrences.partition_point(|o| {
+			(o.quote_start.line, o.quote_start.column)
+				< (body_start_lc.line, body_start_lc.column)
+		});
+		let body_occurrences = &occurrences[first_in_body..];
+
 		match start_span.join(end_span).and_then(|s| s.source_text()) {
-			Some(raw) if occurrences.is_empty() => raw,
-			Some(raw) => substitute_vars_in_body(&raw, body_start_lc, &occurrences),
-			None => {
-				// Fallback: token-based reconstruction with var substitution.
-				reconstruct_body_fallback(&tts, body_start, &occurrences)
-			}
+			Some(raw) if body_occurrences.is_empty() => raw,
+			Some(raw) => substitute_vars_in_body(&raw, body_start_lc, body_occurrences),
+			None => reconstruct_body_fallback(&tts, run_abs_idx, &occurrences),
 		}
 	} else {
 		String::new()
@@ -867,6 +889,7 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 
 	Ok(ParsedJava {
 		imports,
+		outer,
 		body,
 		vars,
 		java_type,
@@ -887,6 +910,7 @@ pub fn java(input: TokenStream) -> TokenStream {
 
 	let ParsedJava {
 		imports,
+		outer,
 		body,
 		vars,
 		java_type,
@@ -895,6 +919,7 @@ pub fn java(input: TokenStream) -> TokenStream {
 	// Unique class name derived from the source content.
 	let mut h = DefaultHasher::new();
 	imports.hash(&mut h);
+	outer.hash(&mut h);
 	body.hash(&mut h);
 	let class_name = format!("InlineJava_{:016x}", h.finish());
 	let filename = format!("{class_name}.java");
@@ -924,7 +949,7 @@ pub fn java(input: TokenStream) -> TokenStream {
 
 	let main_method = java_type.java_main(&var_inits);
 	let java_class = format!(
-		"{imports}\npublic class {class_name} {{\n{var_fields}\n{body}\n\n{main_method}\n}}\n"
+		"{imports}\n{outer}\npublic class {class_name} {{\n{var_fields}\n{body}\n\n{main_method}\n}}\n"
 	);
 
 	let java_compiler_extra: Vec<String> = opts
@@ -1022,6 +1047,7 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 
 	let ParsedJava {
 		imports,
+		outer,
 		body,
 		java_type,
 		..
@@ -1029,6 +1055,7 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 
 	let mut h = DefaultHasher::new();
 	imports.hash(&mut h);
+	outer.hash(&mut h);
 	body.hash(&mut h);
 	let class_name = format!("CtJava_{:016x}", h.finish());
 	let filename = format!("{class_name}.java");
@@ -1041,7 +1068,7 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 
 	let main_method = java_type.java_main("");
 	let java_class =
-		format!("{imports}\npublic class {class_name} {{\n{body}\n\n{main_method}\n}}\n");
+		format!("{imports}\n{outer}\npublic class {class_name} {{\n{body}\n\n{main_method}\n}}\n");
 
 	let tmp_dir = std::env::temp_dir().join(&class_name);
 	std::fs::create_dir_all(&tmp_dir)
