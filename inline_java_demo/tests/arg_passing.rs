@@ -53,6 +53,19 @@ fn java_runtime_javac_classpath_jar() {
 	assert_eq!(val, Ok("Hello, World!".to_string()));
 }
 
+#[test]
+fn java_runtime_javac_classpath_jar_long_arg_name() {
+	let val: Result<String, _> = java! {
+		javac = "-classpath \"$CARGO_MANIFEST_DIR/demo.jar\"",
+		java = "-classpath $INLINE_JAVA_CP:$CARGO_MANIFEST_DIR/demo.jar",
+		import com.example.demo.*;
+		public static String run() {
+			return new HelloWorld().greet();
+		}
+	};
+	assert_eq!(val, Ok("Hello, World!".to_string()));
+}
+
 // ── javac = "..." : sourcepath lets javac resolve project Java files ──────────
 
 #[test]
