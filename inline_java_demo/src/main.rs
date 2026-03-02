@@ -33,7 +33,49 @@ fn main() {
 
 	// ── compile-time constant ────────────────────────────────────────────────
 	println!("PI (baked at compile time): {PI_APPROX}");
+
+	let imports: String = java! {
+		javac = "-sourcepath /home/ubuntu/Dev/inline_java/inline_java_demo",
+		import com.example.demo.*;
+
+		public static String run() {
+			return new HelloWorld().greet();
+		}
+	};
+	println!("{imports}");
+
+	let package: String = java! {
+		javac = "-sourcepath /home/ubuntu/Dev/inline_java/inline_java_demo",
+		package com.example.demo;
+
+		public static String run() {
+			return new HelloWorld().greet();
+		}
+	};
+	println!("{package}");
+
+	// ── explicit javac + java flags (runtime) ───────────────────────────────
+	let explicit: String = java! {
+		javac = "-sourcepath /home/ubuntu/Dev/inline_java/inline_java_demo",
+		import com.example.demo.*;
+		public static String run() {
+			return new HelloWorld().greet();
+		}
+	};
+	println!("explicit javac sourcepath (java!): {explicit}");
+
+	// ── explicit javac + java flags (compile-time) ───────────────────────────
+	println!("explicit javac + java flags (ct_java!): {EXPLICIT_CT}");
 }
+
+// ── compile-time with explicit javac and java flags ───────────────────────────
+const EXPLICIT_CT: i32 = ct_java! {
+	javac = "-sourcepath /tmp",
+	java = "-Xss512k",
+	public static void run() {
+		System.out.println(1 + 1);
+	}
+};
 
 // ── Compile-time constant: evaluated during rustc macro expansion ────────────
 // Math.PI is baked into the binary; java is never invoked at runtime for this.

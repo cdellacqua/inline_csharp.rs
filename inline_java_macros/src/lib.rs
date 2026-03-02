@@ -6,22 +6,44 @@
 // ┌─────────────┬──────────┬───────────────┐
 // │             │ runtime  │ compile-time  │
 // ├─────────────┼──────────┼───────────────┤
-// │ input       │ inline_java (via 'var) │ —  │
-// │ output      │ inline_java            │ ct_java │
+// │ input       │ java!    │ ct_java!      │
 // └─────────────┴──────────┴───────────────┘
 //
-// java
+// Optional key-value options
+// ──────────────────────────
+// Both macros accept zero or more `key = "value"` pairs before the Java body,
+// separated by commas.  Recognised keys:
+//
+//   javac = "<args>"   extra command-line arguments passed verbatim to javac,
+//                      split on whitespace.  No default.
+//   java  = "<args>"   extra command-line arguments passed verbatim to java,
+//                      split on whitespace.  No default.
+//
+// Examples:
+//
+//   java! {
+//       javac = "-sourcepath /path/to/java/src",
+//       import com.example.*; ...
+//   }
+//
+//   ct_java! {
+//       javac = "-sourcepath /path/to/src",
+//       java  = "-Dprop=val -Xss512k",
+//       public static void run() { ... }
+//   }
+//
+// java!
 // ────────────
 // Runs Java at *program runtime*.  The user provides a `run()` method; the
-// macro wraps it in a class, writes it to a temp file, spawns `java`, and
-// parses the printed output back into the Rust return type.
+// macro wraps it in a class, compiles it with `javac`, and runs it with
+// `java`.
 //
 // Rust variables can be injected using `'var` syntax (same convention as
 // inline_python).  Each `'var` becomes the Java String `_RUST_var`, passed
 // via args[].
 //
 //   let n = 42i32;
-//   let s: String = java {
+//   let s: String = java! {
 //       public static String run() {
 //           int x = Integer.parseInt('n);
 //           return "double is " + (x * 2);
@@ -34,22 +56,11 @@
 // expanding macros).  Whatever the Java code prints to stdout becomes the
 // Rust token stream at the call site.
 //
-// Use it wherever a Rust literal or expression is needed but the value is
-// easier to compute in Java:
-//
 //   const PI_APPROX: f64 = ct_java! {
 //       public static void run() {
 //           System.out.println(Math.PI);
 //       }
 //   };
-//
-// Or to emit full Rust items:
-//
-//   ct_java! {
-//       public static void run() {
-//           System.out.println("static GREETING: &str = \"hello\";");
-//       }
-//   }
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -65,10 +76,13 @@ use quote::quote;
 pub fn java(input: TokenStream) -> TokenStream {
 	let input2 = proc_macro2::TokenStream::from(input);
 
+	// Consume any leading `key = "value",` option pairs.
+	let (opts, input2) = extract_opts(input2);
+
 	// Replace 'var tokens with _RUST_var idents and collect the variable names.
 	let (substituted, vars) = extract_vars(input2);
 
-	// Split the substituted stream into import statements and the method body.
+	// Split the substituted stream into import/package statements and the method body.
 	let (imports_ts, body_ts) = split_imports(substituted);
 	let imports = imports_ts.to_string();
 	let body = body_ts.to_string();
@@ -80,6 +94,14 @@ pub fn java(input: TokenStream) -> TokenStream {
 	let class_name = format!("InlineJava_{:016x}", h.finish());
 	let filename = format!("{class_name}.java");
 
+	// If the user wrote a `package` declaration, the class must be run by its
+	// fully-qualified name (e.g. `com.example.demo.InlineJava_xxx`).
+	let package_name = parse_package_name(&imports);
+	let full_class_name = match &package_name {
+		Some(pkg) => format!("{pkg}.{class_name}"),
+		None => class_name.clone(),
+	};
+
 	// `static String _RUST_foo;` declarations, one per captured variable.
 	let var_fields: String = vars.keys().fold(String::new(), |mut s, name| {
 		writeln!(s, "\tstatic String _RUST_{name};").unwrap();
@@ -87,13 +109,13 @@ pub fn java(input: TokenStream) -> TokenStream {
 	});
 
 	// Assignments inside main: `_RUST_foo = args[0];` in alphabetical order.
-	let var_inits: String =
-		vars.keys()
-			.enumerate()
-			.fold(String::new(), |mut s, (i, name)| {
-				writeln!(s, "\t\t_RUST_{name} = args[{i}];").unwrap();
-				s
-			});
+	let var_inits: String = vars
+		.keys()
+		.enumerate()
+		.fold(String::new(), |mut s, (i, name)| {
+			writeln!(s, "\t\t_RUST_{name} = args[{i}];").unwrap();
+			s
+		});
 
 	// Assemble the complete Java source file.
 	let java_class = format!(
@@ -104,19 +126,48 @@ pub fn java(input: TokenStream) -> TokenStream {
          }}\n}}\n"
 	);
 
-	// Idents for the captured Rust variables, in sorted order, used in quote!
-	// to emit `.arg(var.to_string())` calls.
+	let java_compiler_extra: Vec<String> = opts
+		.javac_args
+		.map(|a| split_args(&a))
+		.unwrap_or_default();
+	let java_runtime_extra: Vec<String> = opts
+		.java_args
+		.map(|a| split_args(&a))
+		.unwrap_or_default();
+
+	// Idents for the captured Rust variables, in sorted order.
 	let var_idents: Vec<Ident> = vars.values().cloned().collect();
 
 	let generated = quote! {
 		{
-			// Java 11+ (JEP 330): `java Foo.java` compiles and runs in one step.
-			let _src = ::std::env::temp_dir().join(#filename);
+			// Deterministic temp dir keyed by the class name (= hash of source).
+			let _tmp_dir = ::std::env::temp_dir().join(#class_name);
+			::std::fs::create_dir_all(&_tmp_dir)
+				.expect("inline_java: failed to create temp dir");
+
+			let _src = _tmp_dir.join(#filename);
 			::std::fs::write(&_src, #java_class)
 				.expect("inline_java: failed to write .java source");
 
-			let _java = ::std::process::Command::new("java")
+			// Compile phase.
+			let _javac = ::std::process::Command::new("javac")
+				#(.arg(#java_compiler_extra))*
+				.arg("-d").arg(&_tmp_dir)
 				.arg(&_src)
+				.output()
+				.expect("inline_java: could not invoke javac (is it on PATH?)");
+			if !_javac.status.success() {
+				panic!(
+					"inline_java: javac failed:\n{}",
+					::std::string::String::from_utf8_lossy(&_javac.stderr)
+				);
+			}
+
+			// Run phase.
+			let _java = ::std::process::Command::new("java")
+				#(.arg(#java_runtime_extra))*
+				.arg("-cp").arg(&_tmp_dir)
+				.arg(#full_class_name)
 				#(.arg(::std::string::ToString::to_string(&#var_idents)))*
 				.output()
 				.expect("inline_java: could not invoke java (is it on PATH?)");
@@ -143,9 +194,8 @@ pub fn java(input: TokenStream) -> TokenStream {
 
 /// Run Java at *compile time* and splice its stdout into the Rust token stream.
 ///
-/// The Java code should contain a `public static void run()` method that
-/// prints the desired Rust code/literal to stdout.  Whatever it prints is
-/// parsed as a Rust token stream and substituted at the call site.
+/// Accepts optional `javac = "..."` and `java = "..."` key-value pairs before
+/// the Java body.  Both default to no extra args when omitted.
 ///
 /// Java compilation/runtime errors become Rust `compile_error!` diagnostics.
 #[proc_macro]
@@ -157,6 +207,8 @@ pub fn ct_java(input: TokenStream) -> TokenStream {
 }
 
 fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStream, String> {
+	let (opts, input) = extract_opts(input);
+
 	let (imports_ts, body_ts) = split_imports(input);
 	let imports = imports_ts.to_string();
 	let body = body_ts.to_string();
@@ -167,6 +219,12 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 	let class_name = format!("CtJava_{:016x}", h.finish());
 	let filename = format!("{class_name}.java");
 
+	let package_name = parse_package_name(&imports);
+	let full_class_name = match &package_name {
+		Some(pkg) => format!("{pkg}.{class_name}"),
+		None => class_name.clone(),
+	};
+
 	// The user writes a `run()` method; main just calls it.
 	let java_class = format!(
 		"{imports}\npublic class {class_name} {{\n{body}\n\n\
@@ -175,26 +233,187 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
          }}\n}}\n"
 	);
 
-	let src = std::env::temp_dir().join(&filename);
+	let tmp_dir = std::env::temp_dir().join(&class_name);
+	std::fs::create_dir_all(&tmp_dir)
+		.map_err(|e| format!("ct_java: failed to create temp dir: {e}"))?;
+
+	let src = tmp_dir.join(&filename);
 	std::fs::write(&src, &java_class)
 		.map_err(|e| format!("ct_java: failed to write .java source: {e}"))?;
 
-	let out = std::process::Command::new("java")
+	let java_compiler_extra: Vec<String> = opts
+		.javac_args
+		.map(|a| split_args(&a))
+		.unwrap_or_default();
+	let java_runtime_extra: Vec<String> = opts
+		.java_args
+		.map(|a| split_args(&a))
+		.unwrap_or_default();
+
+	// Compile phase.
+	let mut java_compiler_cmd = std::process::Command::new("javac");
+	for arg in &java_compiler_extra {
+		java_compiler_cmd.arg(arg);
+	}
+	let javac_out = java_compiler_cmd
+		.arg("-d")
+		.arg(&tmp_dir)
 		.arg(&src)
+		.output()
+		.map_err(|e| format!("ct_java: could not invoke javac (is it on PATH?): {e}"))?;
+
+	if !javac_out.status.success() {
+		let stderr = String::from_utf8_lossy(&javac_out.stderr);
+		return Err(format!("ct_java: javac failed:\n{stderr}"));
+	}
+
+	// Run phase.
+	let mut java_cmd = std::process::Command::new("java");
+	for arg in &java_runtime_extra {
+		java_cmd.arg(arg);
+	}
+	let java_output = java_cmd
+		.arg("-cp")
+		.arg(&tmp_dir)
+		.arg(&full_class_name)
 		.output()
 		.map_err(|e| format!("ct_java: could not invoke java (is it on PATH?): {e}"))?;
 
-	if !out.status.success() {
-		let stderr = String::from_utf8_lossy(&out.stderr);
+	if !java_output.status.success() {
+		let stderr = String::from_utf8_lossy(&java_output.stderr);
 		return Err(format!("ct_java: java failed:\n{stderr}"));
 	}
 
-	let stdout = String::from_utf8(out.stdout)
+	let stdout = String::from_utf8(java_output.stdout)
 		.map_err(|_| "ct_java: Java output was not valid UTF-8".to_string())?;
 
-	// The printed output IS the Rust token stream injected at the call site.
 	proc_macro2::TokenStream::from_str(stdout.trim())
 		.map_err(|e| format!("ct_java: produced invalid Rust code: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Option extraction: `javac = "…"` / `java = "…"` before the Java body
+// ---------------------------------------------------------------------------
+
+struct JavaOpts {
+	/// Extra args for `javac`, split on whitespace at use-site.  `None` → no extra args.
+	javac_args: Option<String>,
+	/// Extra args for `java`, split on whitespace at use-site.  `None` → no extra args.
+	java_args: Option<String>,
+}
+
+/// Split a shell-style argument string into individual arguments, respecting
+/// single- and double-quoted spans.  Quotes are stripped; content inside them
+/// is treated as a single token even if it contains whitespace.
+///
+/// Examples:
+///   `-sourcepath /tmp`         → ["-sourcepath", "/tmp"]
+///   `-Dprop='hello world'`     → ["-Dprop=hello world"]
+///   `-Da="x y" -Db=z`         → ["-Da=x y", "-Db=z"]
+fn split_args(s: &str) -> Vec<String> {
+	let mut args: Vec<String> = Vec::new();
+	let mut cur = String::new();
+	let mut in_single = false;
+	let mut in_double = false;
+
+	for ch in s.chars() {
+		match ch {
+			'\'' if !in_double => in_single = !in_single,
+			'"' if !in_single => in_double = !in_double,
+			' ' | '\t' if !in_single && !in_double => {
+				if !cur.is_empty() {
+					args.push(std::mem::take(&mut cur));
+				}
+			}
+			_ => cur.push(ch),
+		}
+	}
+	if !cur.is_empty() {
+		args.push(cur);
+	}
+	args
+}
+
+/// Consume leading `javac = "…"` / `java = "…"` option pairs (comma-separated,
+/// trailing comma optional) and return the remaining token stream as the Java
+/// body.  Unrecognised leading tokens are left untouched.
+fn extract_opts(input: proc_macro2::TokenStream) -> (JavaOpts, proc_macro2::TokenStream) {
+	let mut tts: Vec<TokenTree> = input.into_iter().collect();
+	let mut opts = JavaOpts {
+		javac_args: None,
+		java_args: None,
+	};
+	let mut cursor = 0;
+
+	loop {
+		// We need at least Ident `=` Literal at positions cursor..cursor+2.
+		match try_parse_opt(&tts[cursor..]) {
+			None => break,
+			Some((key, val, consumed)) => {
+				match key.as_str() {
+					"javac" => opts.javac_args = Some(val),
+					"java" => opts.java_args = Some(val),
+					_ => break, // unrecognised key — stop, leave in stream
+				}
+				cursor += consumed;
+				// Consume optional trailing comma.
+				if let Some(TokenTree::Punct(p)) = tts.get(cursor)
+					&& p.as_char() == ','
+				{
+					cursor += 1;
+				}
+			}
+		}
+	}
+
+	let rest = tts.drain(cursor..).collect();
+	(opts, rest)
+}
+
+/// Try to parse `Ident("javac"|"java") Punct("=") Literal(string)` at the
+/// start of `tts`.  Returns `(key, unquoted_value, tokens_consumed)` or
+/// `None` if the pattern doesn't match.
+fn try_parse_opt(tts: &[TokenTree]) -> Option<(String, String, usize)> {
+	let key = match tts.first() {
+		Some(TokenTree::Ident(id)) => id.to_string(),
+		_ => return None,
+	};
+	let Some(TokenTree::Punct(eq)) = tts.get(1) else {
+		return None;
+	};
+	if eq.as_char() != '=' {
+		return None;
+	}
+	let val_str = match tts.get(2) {
+		Some(TokenTree::Literal(lit)) => lit.to_string(),
+		_ => return None,
+	};
+	// Strip surrounding double-quotes from the string literal representation.
+	if val_str.starts_with('"') && val_str.ends_with('"') && val_str.len() >= 2 {
+		Some((key, val_str[1..val_str.len() - 1].to_string(), 3))
+	} else {
+		None
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Package name extraction
+// ---------------------------------------------------------------------------
+
+/// Extract the package name from the string representation of the imports
+/// token stream.  `proc_macro2` serialises `package com.example.demo;` as a
+/// compact string (dots and semicolon not separated by spaces), so we use
+/// substring search rather than splitting on whitespace.
+fn parse_package_name(imports: &str) -> Option<String> {
+	let marker = "package ";
+	let i = imports.find(marker)?;
+	if i > 0 && !imports[..i].ends_with(|c: char| c.is_whitespace()) {
+		return None;
+	}
+	let rest = imports[i + marker.len()..].trim_start();
+	let semi = rest.find(';')?;
+	let pkg = rest[..semi].trim().replace(|c: char| c.is_whitespace(), "");
+	if pkg.is_empty() { None } else { Some(pkg) }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,14 +432,12 @@ fn extract_vars(
 	let mut iter = input.into_iter().peekable();
 
 	while let Some(tt) = iter.next() {
-		// Check for the `'` Joint punct that starts a `'var` capture.
 		let is_quote_punct = matches!(
 			&tt,
 			TokenTree::Punct(p) if p.as_char() == '\'' && p.spacing() == Spacing::Joint
 		);
 
 		if is_quote_punct {
-			// Only treat as a variable capture if the very next token is an ident.
 			if matches!(iter.peek(), Some(TokenTree::Ident(_))) {
 				let TokenTree::Ident(ident) = iter.next().unwrap() else {
 					unreachable!()
@@ -230,7 +447,6 @@ fn extract_vars(
 				vars.entry(name.clone()).or_insert_with(|| ident);
 				output.push(TokenTree::Ident(Ident::new(&format!("_RUST_{name}"), span)));
 			} else {
-				// Not followed by an ident — leave the `'` as-is.
 				output.push(tt);
 			}
 		} else {
@@ -257,8 +473,7 @@ fn extract_vars(
 // ---------------------------------------------------------------------------
 
 /// Partition the token stream into (`import_statements`, rest).
-/// Detects `import …;` and `package …;` at the top level by looking for
-/// an `import`/`package` identifier followed by tokens up to the next `;`.
+/// Detects `import …;` and `package …;` at the top level.
 fn split_imports(
 	input: proc_macro2::TokenStream,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
@@ -269,13 +484,11 @@ fn split_imports(
 	while let Some(tt) = iter.next() {
 		let is_directive = matches!(
 			&tt,
-			TokenTree::Ident(id)
-				if *id == "import" || *id == "package"
+			TokenTree::Ident(id) if *id == "import" || *id == "package"
 		);
 
 		if is_directive {
 			imports.push(tt);
-			// Drain into imports up to and including the terminating `;`
 			for tt in iter.by_ref() {
 				let is_semi = matches!(&tt, TokenTree::Punct(p) if p.as_char() == ';');
 				imports.push(tt);
@@ -288,7 +501,5 @@ fn split_imports(
 		}
 	}
 
-	let import_ts: proc_macro2::TokenStream = imports.into_iter().collect();
-	let body_ts: proc_macro2::TokenStream = body.into_iter().collect();
-	(import_ts, body_ts)
+	(imports.into_iter().collect(), body.into_iter().collect())
 }
