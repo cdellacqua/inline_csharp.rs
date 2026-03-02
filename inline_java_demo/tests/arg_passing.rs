@@ -38,6 +38,21 @@ fn java_runtime_multiple_java_args() {
 	assert_eq!(val, Ok("foo:bar".to_string()));
 }
 
+// ── classpath JAR via $INLINE_JAVA_CP ────────────────────────────────────────
+
+#[test]
+fn java_runtime_javac_classpath_jar() {
+	let val: Result<String, _> = java! {
+		javac = "-cp \"$CARGO_MANIFEST_DIR/demo.jar\"",
+		java = "-cp $INLINE_JAVA_CP:$CARGO_MANIFEST_DIR/demo.jar",
+		import com.example.demo.*;
+		public static String run() {
+			return new HelloWorld().greet();
+		}
+	};
+	assert_eq!(val, Ok("Hello, World!".to_string()));
+}
+
 // ── javac = "..." : sourcepath lets javac resolve project Java files ──────────
 
 #[test]

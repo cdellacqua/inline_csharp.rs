@@ -88,7 +88,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as FmtWrite;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
-
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, LineColumn, Spacing, TokenTree};
 use quote::quote;
@@ -952,27 +951,21 @@ pub fn java(input: TokenStream) -> TokenStream {
 		"{imports}\n{outer}\npublic class {class_name} {{\n{var_fields}\n{body}\n\n{main_method}\n}}\n"
 	);
 
+	// $INLINE_JAVA_CP is injected as a virtual variable during shellexpand so
+	// users can reference the auto-generated tmpdir in their javac/java args
+	// (e.g. `java = "-cp $INLINE_JAVA_CP:mylib.jar"`).  The path is
+	// deterministic (temp_dir + class_name hash) and matches the path the
+	// generated code computes at program runtime.
+	let inline_java_cp = std::env::temp_dir().join(&class_name).to_string_lossy().into_owned();
+
 	let java_compiler_extra: Vec<String> = opts
 		.javac_args
-		.map(|a| {
-			split_args(
-				&shellexpand::full(&a)
-					.map(std::borrow::Cow::into_owned)
-					.unwrap_or(a),
-			)
-		})
+		.map(|a| split_args(&shellexpand_with_cp(&a, &inline_java_cp)))
 		.unwrap_or_default();
 	let java_runtime_extra: Vec<String> = opts
 		.java_args
-		.map(|a| {
-			split_args(
-				&shellexpand::full(&a)
-					.map(std::borrow::Cow::into_owned)
-					.unwrap_or(a),
-			)
-		})
+		.map(|a| split_args(&shellexpand_with_cp(&a, &inline_java_cp)))
 		.unwrap_or_default();
-
 	let var_idents: Vec<Ident> = vars.values().cloned().collect();
 	let deser = java_type.rust_deser();
 
@@ -1000,10 +993,11 @@ pub fn java(input: TokenStream) -> TokenStream {
 				));
 			}
 
-			// Run phase.
+			// Run phase.  The default `-cp $tmpdir` comes first; any `-cp`
+			// supplied via `java = "..."` will override it (last flag wins).
 			let _java = ::std::process::Command::new("java")
-				#(.arg(#java_runtime_extra))*
 				.arg("-cp").arg(&_tmp_dir)
+				#(.arg(#java_runtime_extra))*
 				.arg(#full_class_name)
 				#(.arg(::std::string::ToString::to_string(&#var_idents)))*
 				.output()
@@ -1078,25 +1072,15 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 	std::fs::write(&src, &java_class)
 		.map_err(|e| format!("ct_java: failed to write .java source: {e}"))?;
 
+	let inline_java_cp = tmp_dir.to_string_lossy().into_owned();
+
 	let java_compiler_extra: Vec<String> = opts
 		.javac_args
-		.map(|a| {
-			split_args(
-				&shellexpand::full(&a)
-					.map(std::borrow::Cow::into_owned)
-					.unwrap_or(a),
-			)
-		})
+		.map(|a| split_args(&shellexpand_with_cp(&a, &inline_java_cp)))
 		.unwrap_or_default();
 	let java_runtime_extra: Vec<String> = opts
 		.java_args
-		.map(|a| {
-			split_args(
-				&shellexpand::full(&a)
-					.map(std::borrow::Cow::into_owned)
-					.unwrap_or(a),
-			)
-		})
+		.map(|a| split_args(&shellexpand_with_cp(&a, &inline_java_cp)))
 		.unwrap_or_default();
 
 	// Compile phase.
@@ -1117,14 +1101,14 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 		));
 	}
 
-	// Run phase.
+	// Run phase.  The default `-cp $tmpdir` comes first; any `-cp` supplied
+	// via `java = "..."` (referencing $INLINE_JAVA_CP) overrides it.
 	let mut java_cmd = std::process::Command::new("java");
+	java_cmd.arg("-cp").arg(&tmp_dir);
 	for arg in &java_runtime_extra {
 		java_cmd.arg(arg);
 	}
 	let java_output = java_cmd
-		.arg("-cp")
-		.arg(&tmp_dir)
 		.arg(&full_class_name)
 		.output()
 		.map_err(|e| format!("ct_java: could not invoke java (is it on PATH?): {e}"))?;
@@ -1147,6 +1131,22 @@ struct JavaOpts {
 	javac_args: Option<String>,
 	/// Extra args for `java`, shell-split at use-site.  `None` → no extra args.
 	java_args: Option<String>,
+}
+
+/// Shell-expand `s` with `INLINE_JAVA_CP` injected as a virtual variable
+/// (resolved to `inline_java_cp`) without mutating the process environment.
+/// All other `$VAR` references fall back to `std::env::var`.
+fn shellexpand_with_cp(s: &str, inline_java_cp: &str) -> String {
+	let cp = inline_java_cp.to_owned();
+	shellexpand::full_with_context_no_errors(
+		s,
+		|| std::env::var("HOME").ok(),
+		move |var| match var {
+			"INLINE_JAVA_CP" => Some(cp.clone()),
+			other => std::env::var(other).ok(),
+		},
+	)
+	.into_owned()
 }
 
 /// Split a shell-style argument string into individual arguments, respecting
@@ -1231,15 +1231,12 @@ fn try_parse_opt(tts: &[TokenTree]) -> Option<(String, String, usize)> {
 	if eq.as_char() != '=' {
 		return None;
 	}
-	let val_str = match tts.get(2) {
-		Some(TokenTree::Literal(lit)) => lit.to_string(),
+	let lit = match tts.get(2) {
+		Some(TokenTree::Literal(lit)) => lit,
 		_ => return None,
 	};
-	if val_str.starts_with('"') && val_str.ends_with('"') && val_str.len() >= 2 {
-		Some((key, val_str[1..val_str.len() - 1].to_string(), 3))
-	} else {
-		None
-	}
+	let value = litrs::StringLit::try_from(lit).ok()?.value().to_owned();
+	Some((key, value, 3))
 }
 
 // ---------------------------------------------------------------------------
