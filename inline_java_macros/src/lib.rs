@@ -958,10 +958,11 @@ pub fn java(input: TokenStream) -> TokenStream {
 			let _javac_extra = ::inline_java::expand_java_args(#javac_raw, &_cp);
 			let _java_extra  = ::inline_java::expand_java_args(#java_raw,  &_cp);
 
-			// Fast path: already compiled in this process.
-			static _COMPILED: ::std::sync::atomic::AtomicBool =
-				::std::sync::atomic::AtomicBool::new(false);
-			if !_COMPILED.load(::std::sync::atomic::Ordering::Acquire) {
+			// Skip compilation if a previous run (same or different process) already
+			// produced the .class files.  The .done sentinel is the source of truth;
+			// we never cache its value in-process so /tmp being cleared is handled
+			// automatically on the next invocation.
+			if !_tmp_dir.join(".done").exists() {
 				::std::fs::create_dir_all(&_tmp_dir)
 					.map_err(|e| ::inline_java::JavaError::Io(e.to_string()))?;
 
@@ -975,7 +976,7 @@ pub fn java(input: TokenStream) -> TokenStream {
 				let _guard = _lock.write()
 					.map_err(|e| ::inline_java::JavaError::Io(e.to_string()))?;
 
-				// Double-check: another process may have compiled while we waited.
+				// Double-check: another thread/process may have compiled while we waited.
 				if !_tmp_dir.join(".done").exists() {
 					let _src = _tmp_dir.join(#filename);
 					::std::fs::write(&_src, #java_class)
@@ -998,8 +999,6 @@ pub fn java(input: TokenStream) -> TokenStream {
 					::std::fs::write(_tmp_dir.join(".done"), b"")
 						.map_err(|e| ::inline_java::JavaError::Io(e.to_string()))?;
 				}
-
-				_COMPILED.store(true, ::std::sync::atomic::Ordering::Release);
 			}
 
 			// Run phase.  The default `-cp $tmpdir` comes first; any `-cp`
