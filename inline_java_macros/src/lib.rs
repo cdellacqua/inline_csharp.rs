@@ -1069,7 +1069,7 @@ fn try_parse_opt(tts: &[TokenTree]) -> Option<(String, String, usize)> {
 // Shared helpers used by both java! and ct_java!
 
 /// Compute a deterministic class name by hashing the source and options.
-/// `prefix` distinguishes runtime ("InlineJava") from compile-time ("CtJava").
+/// `prefix` distinguishes runtime ("`InlineJava`") from compile-time ("`CtJava`").
 fn make_class_name(prefix: &str, imports: &str, outer: &str, body: &str, opts: &JavaOpts) -> String {
 	let mut h = DefaultHasher::new();
 	imports.hash(&mut h);

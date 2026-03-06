@@ -31,6 +31,7 @@ pub enum JavaError {
 /// Shell-expand `raw` with `INLINE_JAVA_CP` resolved to `inline_java_cp`,
 /// then split into individual arguments (respecting quotes).
 /// Returns an empty vec if `raw` is empty.
+#[must_use] 
 pub fn expand_java_args(raw: &str, inline_java_cp: &str) -> Vec<String> {
 	if raw.is_empty() {
 		return Vec::new();
