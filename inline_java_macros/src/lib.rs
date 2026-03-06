@@ -1,84 +1,35 @@
-// inline_java/src/lib.rs
-//
-// Two proc macros for embedding Java in Rust, inspired by `inline_python` /
-// `ct_python`.
-//
-// ┌─────────────┬──────────┬───────────────┐
-// │             │ runtime  │ compile-time  │
-// ├─────────────┼──────────┼───────────────┤
-// │ input       │ java!    │ ct_java!      │
-// └─────────────┴──────────┴───────────────┘
-//
-// Both macros share the same Java-side API: the user writes a
-// `public static <T> run()` method where T must be one of:
-//   byte, short, int, long, float, double, boolean, char, String
-//   T[]  (array of any of the above)
-//   List<BoxedT> (java.util.List of the boxed equivalent)
-//
-// The macro generates a `main()` that binary-serialises the return value of
-// `run()` to stdout (via DataOutputStream / raw UTF-8 for String), reads those
-// bytes, and produces the corresponding Rust value.  This avoids both text
-// parsing and the need to manually quote strings for ct_java!.
-//
-// Arrays and Lists use a length-prefixed wire format:
-//   4 bytes big-endian int32: number of elements
-//   for each element:
-//     - fixed-size primitives: serialized with DataOutputStream (same as scalar)
-//     - String: 4-byte int32 length + UTF-8 bytes
-//
-// Optional key-value options
-// Both macros accept zero or more `key = "value"` pairs before the Java body,
-// separated by commas.  Recognised keys:
-//
-//   javac = "<args>"   extra command-line arguments passed verbatim to javac,
-//                      shell-quoted (single/double quotes respected).
-//   java  = "<args>"   extra command-line arguments passed verbatim to java,
-//                      shell-quoted (single/double quotes respected).
-//
-// java!
-// Runs Java at *program runtime*.  The user provides a `run()` method; the
-// macro wraps it in a class, compiles it with `javac`, and runs it with
-// `java`.  The binary-encoded return value is decoded into the inferred Rust
-// type at the call site.
-//
-// Expands to `Result<T, inline_java::JavaError>`, so callers can propagate
-// errors with `?` or surface them with `.unwrap()`.
-//
-// Rust variables can be injected using `'var` syntax (same convention as
-// inline_python).  Each `'var` becomes the Java String `_RUST_var`, passed
-// via args[].
-//
-//   let n = 42i32;
-//   let s: String = java! {
-//       public static String run() {
-//           int x = Integer.parseInt('n);
-//           return "double is " + (x * 2);
-//       }
-//   }.unwrap();
-//
-// ct_java!
-// Runs Java at *compile time* (inside the proc-macro, while rustc is
-// expanding macros).  The return value of `run()` is binary-deserialised and
-// spliced as a Rust literal at the call site (e.g. 42, 3.14, true, 'x',
-// "hello", [1, 2, 3]).
-//
-//   const PI_APPROX: f64 = ct_java! {
-//       public static double run() {
-//           return Math.PI;
-//       }
-//   };
-//
-//   const GREETING: &str = ct_java! {
-//       public static String run() {
-//           return "Hello, World!";
-//       }
-//   };
-//
-//   const PRIMES: [i32; 5] = ct_java! {
-//       public static int[] run() {
-//           return new int[]{2, 3, 5, 7, 11};
-//       }
-//   };
+//! Proc-macro implementation for `inline_java`.
+//!
+//! Provides two proc macros for embedding Java in Rust:
+//!
+//! | Macro       | When it runs   |
+//! |-------------|----------------|
+//! | [`java!`]   | program runtime |
+//! | [`ct_java!`]| compile time    |
+//!
+//! Both macros require the user to write a `public static <T> run()` method
+//! where `T` is one of: `byte`, `short`, `int`, `long`, `float`, `double`,
+//! `boolean`, `char`, `String`, `T[]`, or `List<BoxedT>`.
+//!
+//! # Wire format
+//!
+//! The macro generates a `main()` that binary-serialises `run()`'s return
+//! value to stdout via `DataOutputStream` (raw UTF-8 for `String` scalars).
+//! Arrays and `List`s use a length-prefixed format:
+//!
+//! - 4 bytes big-endian `int32`: number of elements
+//! - for each element: fixed-size `DataOutputStream` encoding, or
+//!   4-byte length prefix + UTF-8 bytes for `String`.
+//!
+//! # Options
+//!
+//! Both macros accept zero or more `key = "value"` pairs before the Java body,
+//! comma-separated.  Recognised keys:
+//!
+//! - `javac = "<args>"` — extra arguments passed verbatim to `javac`
+//!   (shell-quoted; single/double quotes respected).
+//! - `java  = "<args>"` — extra arguments passed verbatim to `java`
+//!   (shell-quoted; single/double quotes respected).
 
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, LineColumn, Spacing, TokenTree};
@@ -881,6 +832,68 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 	})
 }
 
+/// Compile and run Java code at *program runtime*, returning the value of `run()`.
+///
+/// Wraps the provided Java body in a generated class, compiles it with `javac`,
+/// and executes it with `java`.  The return value of `public static T run()` is
+/// binary-serialised by the generated `main()` and deserialised to the inferred
+/// Rust type.
+///
+/// Expands to `Result<T, inline_java::JavaError>`, so callers can propagate
+/// errors with `?` or surface them with `.unwrap()`.
+///
+/// # Options
+///
+/// Optional `key = "value"` pairs may appear before the Java body, separated by
+/// commas:
+///
+/// - `javac = "<args>"` — extra arguments for `javac` (shell-quoted).
+/// - `java  = "<args>"` — extra arguments for `java` (shell-quoted).
+///
+/// `$INLINE_JAVA_CP` in either option expands to the class-output directory.
+///
+/// # Variable injection
+///
+/// Rust variables can be injected using `'var` syntax.  Each `'var` becomes
+/// the Java `String _RUST_var` static field, passed via `args[]`.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use inline_java::java;
+///
+/// // Scalar return value
+/// let x: i32 = java! {
+///     public static int run() {
+///         return 42;
+///     }
+/// }.unwrap();
+///
+/// // Variable injection
+/// let n: i32 = 21;
+/// let doubled: i32 = java! {
+///     public static int run() {
+///         int value = Integer.parseInt('n);
+///         return value * 2;
+///     }
+/// }.unwrap();
+///
+/// // Array return
+/// let primes: Vec<i32> = java! {
+///     public static int[] run() {
+///         return new int[]{2, 3, 5, 7, 11};
+///     }
+/// }.unwrap();
+///
+/// // Extra javac flags
+/// let greeting: String = java! {
+///     javac = "-sourcepath .",
+///     import com.example.demo.*;
+///     public static String run() {
+///         return new HelloWorld().greet();
+///     }
+/// }.unwrap();
+/// ```
 #[proc_macro]
 #[allow(clippy::similar_names)]
 pub fn java(input: TokenStream) -> TokenStream {
@@ -965,6 +978,33 @@ pub fn java(input: TokenStream) -> TokenStream {
 /// the call site (`42`, `3.14`, `true`, `'x'`, `"hello"`, `[1, 2, 3]`, …).
 ///
 /// Java compilation/runtime errors become Rust `compile_error!` diagnostics.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use inline_java::ct_java;
+///
+/// // Numeric constant computed at compile time
+/// const PI_APPROX: f64 = ct_java! {
+///     public static double run() {
+///         return Math.PI;
+///     }
+/// };
+///
+/// // String constant
+/// const GREETING: &str = ct_java! {
+///     public static String run() {
+///         return "Hello, World!";
+///     }
+/// };
+///
+/// // Array constant
+/// const PRIMES: [i32; 5] = ct_java! {
+///     public static int[] run() {
+///         return new int[]{2, 3, 5, 7, 11};
+///     }
+/// };
+/// ```
 #[proc_macro]
 pub fn ct_java(input: TokenStream) -> TokenStream {
 	match ct_java_impl(proc_macro2::TokenStream::from(input)) {

@@ -1,3 +1,15 @@
+//! Core runtime support for `inline_java`.
+//!
+//! This crate is an implementation detail of `inline_java_macros`.  End users
+//! should depend on `inline_java` instead of this crate directly.
+//!
+//! Public items:
+//!
+//! - [`JavaError`] — error type returned by [`run_java`] and by the `java!`
+//!   macro at program runtime.
+//! - [`run_java`] — compile (if needed) and run a generated Java class.
+//! - [`expand_java_args`] — shell-expand an option string into individual args.
+
 /// All errors that `java!` can return at runtime (and that `ct_java!` maps to
 /// `compile_error!` diagnostics at build time).
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
@@ -31,7 +43,19 @@ pub enum JavaError {
 /// Shell-expand `raw` with `INLINE_JAVA_CP` resolved to `inline_java_cp`,
 /// then split into individual arguments (respecting quotes).
 /// Returns an empty vec if `raw` is empty.
-#[must_use] 
+///
+/// # Examples
+///
+/// ```rust
+/// use inline_java_core::expand_java_args;
+///
+/// let args = expand_java_args("-verbose:class -cp $INLINE_JAVA_CP", "/tmp/MyClass");
+/// assert_eq!(args, vec!["-verbose:class", "-cp", "/tmp/MyClass"]);
+///
+/// let empty = expand_java_args("", "/tmp/MyClass");
+/// assert!(empty.is_empty());
+/// ```
+#[must_use]
 pub fn expand_java_args(raw: &str, inline_java_cp: &str) -> Vec<String> {
 	if raw.is_empty() {
 		return Vec::new();
@@ -96,6 +120,20 @@ fn split_args(s: &str) -> Vec<String> {
 /// cannot be created, or if `javac`/`java` cannot be spawned.
 /// Returns [`JavaError::CompilationFailed`] if `javac` exits with a non-zero status.
 /// Returns [`JavaError::RuntimeFailed`] if `java` exits with a non-zero status.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use inline_java_core::run_java;
+///
+/// let src = "public class Greet {
+///     public static void main(String[] args) {
+///         System.out.print(\"hi\");
+///     }
+/// }";
+/// let output = run_java("Greet", "Greet.java", src, "Greet", "", "", &[]).unwrap();
+/// assert_eq!(output, b"hi");
+/// ```
 #[allow(clippy::similar_names)]
 pub fn run_java(
 	class_name: &str,
