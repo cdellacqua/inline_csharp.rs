@@ -5,13 +5,13 @@
 //!
 //! Public items:
 //!
-//! - [`JavaError`] — error type returned by [`run_java`] and by the `java!`
-//!   macro at program runtime.
+//! - [`JavaError`] — error type returned by [`run_java`] and by the `java!` /
+//!   `java_fn!` macros at program runtime.
 //! - [`run_java`] — compile (if needed) and run a generated Java class.
 //! - [`expand_java_args`] — shell-expand an option string into individual args.
 
-/// All errors that `java!` can return at runtime (and that `ct_java!` maps to
-/// `compile_error!` diagnostics at build time).
+/// All errors that `java!` and `java_fn!` can return at runtime (and that
+/// `ct_java!` maps to `compile_error!` diagnostics at build time).
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
 pub enum JavaError {
 	/// An I/O error while creating the temp directory, writing the source
@@ -111,8 +111,7 @@ fn split_args(s: &str) -> Vec<String> {
 /// - `full_class_name` — package-qualified class name passed to `java`.
 /// - `javac_raw`       — raw `javac = "..."` option string (shell-expanded).
 /// - `java_raw`        — raw `java  = "..."` option string (shell-expanded).
-/// - `var_values`      — Rust variable values injected via `'var` syntax, in
-///   alphabetical order (may be empty).
+/// - `stdin_bytes`     — bytes to pipe to the child process's stdin (may be empty).
 ///
 /// # Errors
 ///
@@ -142,8 +141,11 @@ pub fn run_java(
 	full_class_name: &str,
 	javac_raw: &str,
 	java_raw: &str,
-	var_values: &[String],
+	stdin_bytes: &[u8],
 ) -> Result<Vec<u8>, JavaError> {
+	use std::io::Write;
+	use std::process::Stdio;
+
 	let tmp_dir = std::env::temp_dir().join(class_name);
 	let cp = tmp_dir.to_string_lossy().into_owned();
 	let javac_extra = expand_java_args(javac_raw, &cp);
@@ -191,11 +193,30 @@ pub fn run_java(
 	for arg in &java_extra {
 		cmd.arg(arg);
 	}
-	let out = cmd
+	let mut child = cmd
 		.arg(full_class_name)
-		.args(var_values)
-		.output()
+		.stdin(Stdio::piped())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.spawn()
 		.map_err(|e| JavaError::Io(e.to_string()))?;
+
+	// Write stdin bytes then drop the handle to signal EOF.
+	if !stdin_bytes.is_empty() {
+		if let Some(mut stdin_handle) = child.stdin.take() {
+			stdin_handle
+				.write_all(stdin_bytes)
+				.map_err(|e| JavaError::Io(e.to_string()))?;
+		}
+	} else {
+		// Drop stdin handle even when empty so Java doesn't block waiting.
+		drop(child.stdin.take());
+	}
+
+	let out = child
+		.wait_with_output()
+		.map_err(|e| JavaError::Io(e.to_string()))?;
+
 	if !out.status.success() {
 		return Err(JavaError::RuntimeFailed(
 			String::from_utf8_lossy(&out.stderr).into_owned(),

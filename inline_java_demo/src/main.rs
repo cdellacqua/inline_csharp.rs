@@ -1,4 +1,4 @@
-use inline_java::{ct_java, java};
+use inline_java::{ct_java, java, java_fn};
 
 fn main() {
 	// runtime, no input
@@ -11,24 +11,23 @@ fn main() {
 	}.unwrap();
 	println!("Random from Java: {x}");
 
-	// runtime, with input ('var syntax)
+	// runtime, with int parameter (java_fn!)
 	let n: i32 = 21;
-	let doubled: i32 = java! {
-		static int run() {
-			int value = Integer.parseInt('n);
-			return value * 2;
+	let doubled: i32 = java_fn! {
+		static int run(int n) {
+			return n * 2;
 		}
-	}.unwrap();
+	}(n).unwrap();
 	println!("{n} * 2 = {doubled}");
 
-	// runtime, multiple inputs
+	// runtime, multiple String parameters (java_fn!)
 	let greeting = "Hello";
 	let target = "World";
-	let msg: String = java! {
-		static String run() {
-			return 'greeting + ", " + 'target + "!";
+	let msg: String = java_fn! {
+		static String run(String greeting, String target) {
+			return greeting + ", " + target + "!";
 		}
-	}.unwrap();
+	}(greeting, target).unwrap();
 	println!("{msg}");
 
 	// compile-time constant

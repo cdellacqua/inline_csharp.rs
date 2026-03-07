@@ -1,17 +1,18 @@
 //! Proc-macro implementation for `inline_java`.
 //!
-//! Provides two proc macros for embedding Java in Rust:
+//! Provides three proc macros for embedding Java in Rust:
 //!
-//! | Macro       | When it runs   |
-//! |-------------|----------------|
-//! | [`java!`]   | program runtime |
-//! | [`ct_java!`]| compile time    |
+//! | Macro        | When it runs    |
+//! |--------------|-----------------|
+//! | [`java!`]    | program runtime |
+//! | [`java_fn!`] | program runtime |
+//! | [`ct_java!`] | compile time    |
 //!
-//! Both macros require the user to write a `static <T> run()` method
+//! All macros require the user to write a `static <T> run(...)` method
 //! where `T` is one of: `byte`, `short`, `int`, `long`, `float`, `double`,
 //! `boolean`, `char`, `String`, `T[]`, or `List<BoxedT>`.
 //!
-//! # Wire format
+//! # Wire format (Java → Rust, stdout)
 //!
 //! The macro generates a `main()` that binary-serialises `run()`'s return
 //! value to stdout via `DataOutputStream` (raw UTF-8 for `String` scalars).
@@ -21,9 +22,14 @@
 //! - for each element: fixed-size `DataOutputStream` encoding, or
 //!   4-byte length prefix + UTF-8 bytes for `String`.
 //!
+//! # Wire format (Rust → Java, stdin)
+//!
+//! Parameters declared in `run(...)` are serialised by Rust and piped to the
+//! child process's stdin. Java reads them with `DataInputStream`.
+//!
 //! # Options
 //!
-//! Both macros accept zero or more `key = "value"` pairs before the Java body,
+//! All three macros accept zero or more `key = "value"` pairs before the Java body,
 //! comma-separated.  Recognised keys:
 //!
 //! - `javac = "<args>"` — extra arguments passed verbatim to `javac`
@@ -32,9 +38,8 @@
 //!   (shell-quoted; single/double quotes respected).
 
 use proc_macro::TokenStream;
-use proc_macro2::{Ident, LineColumn, Spacing, TokenTree};
+use proc_macro2::{Ident, TokenTree};
 use quote::quote;
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as FmtWrite;
 use std::hash::{Hash, Hasher};
@@ -134,6 +139,7 @@ impl ScalarType {
 	}
 
 	/// Rust type token stream corresponding to this scalar.
+	/// For `String`, returns `::std::string::String` (owned).
 	fn rust_type_ts(self) -> proc_macro2::TokenStream {
 		match self {
 			Self::Byte => quote! { i8 },
@@ -145,6 +151,79 @@ impl ScalarType {
 			Self::Boolean => quote! { bool },
 			Self::Char => quote! { char },
 			Self::Str => quote! { ::std::string::String },
+		}
+	}
+
+	/// Rust parameter type for `java_fn!` function signatures.
+	/// `String` params use `&str` so both `&str` and `&String` work at call sites.
+	fn rust_param_type_ts(self) -> proc_macro2::TokenStream {
+		if self == Self::Str {
+			quote! { &str }
+		} else {
+			self.rust_type_ts()
+		}
+	}
+
+	/// Generates Rust code to serialize one parameter value into `_stdin_bytes: Vec<u8>`.
+	/// `param_ident` is the Rust identifier holding the value.
+	fn rust_ser_ts(self, param_ident: &Ident) -> proc_macro2::TokenStream {
+		match self {
+			Self::Byte => quote! {
+				_stdin_bytes.extend_from_slice(&(#param_ident as i8).to_be_bytes());
+			},
+			Self::Short => quote! {
+				_stdin_bytes.extend_from_slice(&(#param_ident as i16).to_be_bytes());
+			},
+			Self::Int => quote! {
+				_stdin_bytes.extend_from_slice(&(#param_ident as i32).to_be_bytes());
+			},
+			Self::Long => quote! {
+				_stdin_bytes.extend_from_slice(&(#param_ident as i64).to_be_bytes());
+			},
+			Self::Float => quote! {
+				_stdin_bytes.extend_from_slice(&(#param_ident as f32).to_bits().to_be_bytes());
+			},
+			Self::Double => quote! {
+				_stdin_bytes.extend_from_slice(&(#param_ident as f64).to_bits().to_be_bytes());
+			},
+			Self::Boolean => quote! {
+				_stdin_bytes.push(#param_ident as u8);
+			},
+			Self::Char => quote! {
+				{
+					let _c = #param_ident as u32;
+					assert!(_c <= 0xFFFF, "inline_java: char value exceeds u16 range");
+					_stdin_bytes.extend_from_slice(&(_c as u16).to_be_bytes());
+				}
+			},
+			Self::Str => quote! {
+				{
+					let _b = #param_ident.as_bytes();
+					let _len = _b.len() as i32;
+					_stdin_bytes.extend_from_slice(&_len.to_be_bytes());
+					_stdin_bytes.extend_from_slice(_b);
+				}
+			},
+		}
+	}
+
+	/// Generates Java statement(s) to read this type from a `DataInputStream` named `_dis`.
+	fn java_dis_read(self, param_name: &str) -> String {
+		match self {
+			Self::Byte => format!("byte {param_name} = _dis.readByte();"),
+			Self::Short => format!("short {param_name} = _dis.readShort();"),
+			Self::Int => format!("int {param_name} = _dis.readInt();"),
+			Self::Long => format!("long {param_name} = _dis.readLong();"),
+			Self::Float => format!("float {param_name} = _dis.readFloat();"),
+			Self::Double => format!("double {param_name} = _dis.readDouble();"),
+			Self::Boolean => format!("boolean {param_name} = _dis.readBoolean();"),
+			Self::Char => format!("char {param_name} = _dis.readChar();"),
+			Self::Str => format!(
+				"int _len_{param_name} = _dis.readInt();\n\
+				 \t\tbyte[] _b_{param_name} = new byte[_len_{param_name}];\n\
+				 \t\t_dis.readFully(_b_{param_name});\n\
+				 \t\tString {param_name} = new String(_b_{param_name}, java.nio.charset.StandardCharsets.UTF_8);"
+			),
 		}
 	}
 
@@ -217,28 +296,50 @@ enum JavaType {
 
 impl JavaType {
 	/// Generates the complete `main(String[] args)` method that binary-serialises
-	/// `run()`'s return value to stdout.  `var_inits` is pre-formatted code that
-	/// assigns `_RUST_*` static fields from `args[]` (empty for `ct_java!`).
-	fn java_main(self, var_inits: &str) -> String {
+	/// `run()`'s return value to stdout.  `params` lists the parameters declared
+	/// in `run(...)` so the generated `main` can read them from stdin and forward
+	/// them to `run`.
+	fn java_main(self, params: &[(ScalarType, String)]) -> String {
+		// Build DataInputStream setup + parameter reads (only if there are params).
+		let param_reads = if params.is_empty() {
+			String::new()
+		} else {
+			let mut s = String::from(
+				"\t\tjava.io.DataInputStream _dis = new java.io.DataInputStream(System.in);\n",
+			);
+			for (ty, name) in params {
+				writeln!(s, "\t\t{}", ty.java_dis_read(name)).unwrap();
+			}
+			s
+		};
+
+		// Build the run() call argument list.
+		let run_args: String = params
+			.iter()
+			.map(|(_, name)| name.as_str())
+			.collect::<Vec<_>>()
+			.join(", ");
+
 		match self {
 			Self::Scalar(s) => {
 				let serialize = if s == ScalarType::Str {
-					"byte[] _b = run().getBytes(java.nio.charset.StandardCharsets.UTF_8);\n\
+					format!(
+						"byte[] _b = run({run_args}).getBytes(java.nio.charset.StandardCharsets.UTF_8);\n\
   				 \t\tSystem.out.write(_b);\n\
   				 \t\tSystem.out.flush();"
-						.to_string()
+					)
 				} else {
 					let method = s.dos_write_method().unwrap();
 					format!(
 						"java.io.DataOutputStream _dos = \
   					 new java.io.DataOutputStream(System.out);\n\
-  					 \t\t_dos.{method}(run());\n\
+  					 \t\t_dos.{method}(run({run_args}));\n\
   					 \t\t_dos.flush();"
 					)
 				};
 				format!(
 					"\tpublic static void main(String[] args) throws Exception {{\n\
-					 {var_inits}\t\t{serialize}\n\
+					 {param_reads}\t\t{serialize}\n\
 					 \t}}"
 				)
 			}
@@ -247,7 +348,7 @@ impl JavaType {
 				let loop_body = array_serialize_loop(s, prim);
 				format!(
 					"\tpublic static void main(String[] args) throws Exception {{\n\
-					 {var_inits}\t\t{prim}[] _arr = run();\n\
+					 {param_reads}\t\t{prim}[] _arr = run({run_args});\n\
 					 \t\tjava.io.DataOutputStream _dos = new java.io.DataOutputStream(System.out);\n\
 					 \t\t_dos.writeInt(_arr.length);\n\
 					 \t\t{loop_body}\n\
@@ -265,7 +366,7 @@ impl JavaType {
 				let loop_body = array_serialize_loop(s, iter_type);
 				format!(
 					"\tpublic static void main(String[] args) throws Exception {{\n\
-					 {var_inits}\t\tjava.util.List<{boxed}> _arr = run();\n\
+					 {param_reads}\t\tjava.util.List<{boxed}> _arr = run({run_args});\n\
 					 \t\tjava.io.DataOutputStream _dos = new java.io.DataOutputStream(System.out);\n\
 					 \t\t_dos.writeInt(_arr.size());\n\
 					 \t\t{loop_body}\n\
@@ -276,9 +377,20 @@ impl JavaType {
 		}
 	}
 
+	/// Returns the Rust return type token stream for this Java type.
+	fn rust_return_type_ts(self) -> proc_macro2::TokenStream {
+		match self {
+			Self::Scalar(s) => s.rust_type_ts(),
+			Self::Array(s) | Self::List(s) => {
+				let inner = s.rust_type_ts();
+				quote! { ::std::vec::Vec<#inner> }
+			}
+		}
+	}
+
 	/// Returns a Rust expression (as a token stream) that deserialises the raw
 	/// stdout bytes `_raw: Vec<u8>` into the corresponding Rust type.
-	/// Used by `java!` at program runtime.
+	/// Used by `java!` and `java_fn!` at program runtime.
 	fn rust_deser(self) -> proc_macro2::TokenStream {
 		match self {
 			Self::Scalar(s) => match s {
@@ -480,7 +592,7 @@ fn array_serialize_loop(s: ScalarType, iter_type: &str) -> String {
 	}
 }
 
-// parse_java_source — merged import split + var extraction + return-type parse
+// parse_java_source — merged import split + return-type parse
 
 /// Output of the unified Java source parser.
 struct ParsedJava {
@@ -489,143 +601,25 @@ struct ParsedJava {
 	/// Any class/interface/enum declarations written before `run()`.
 	/// Emitted as top-level Java types, outside the generated wrapper class.
 	outer: String,
-	/// The `run()` method and everything after it, verbatim from the original
-	/// source, with every `'var` replaced by `_RUST_var`.
+	/// The `run()` method and everything after it, verbatim from the original source.
 	/// Placed inside the generated wrapper class.
 	body: String,
-	/// Captured Rust variables: name → original Ident (for span / quoting).
-	vars: BTreeMap<String, Ident>,
-	/// Return type of the `static T run()` method.
+	/// Parameters declared in `run(...)`, in order.
+	params: Vec<(ScalarType, String)>,
+	/// Return type of the `static T run(...)` method.
 	java_type: JavaType,
-}
-
-/// Records one `'var` occurrence found while walking the token tree.
-struct VarOccurrence {
-	/// Source position of the leading `'` punctuation.
-	quote_start: LineColumn,
-	/// Source position one-past-end of the identifier that follows.
-	ident_end: LineColumn,
-	/// Variable name (without the leading `'`).
-	name: String,
-}
-
-/// Walk `stream` recursively (into Groups) and collect every `'ident`
-/// occurrence.  The first occurrence of each name is stored in `vars`; all
-/// occurrences (for substitution) go into `occurrences`.
-fn collect_vars(
-	stream: proc_macro2::TokenStream,
-	vars: &mut BTreeMap<String, Ident>,
-	occurrences: &mut Vec<VarOccurrence>,
-) {
-	let tts: Vec<TokenTree> = stream.into_iter().collect();
-	let mut i = 0;
-	while i < tts.len() {
-		if matches!(&tts[i], TokenTree::Punct(p)
-				if p.as_char() == '\'' && p.spacing() == Spacing::Joint)
-			&& let Some(TokenTree::Ident(id)) = tts.get(i + 1)
-		{
-			let name = id.to_string();
-			vars.entry(name.clone()).or_insert_with(|| id.clone());
-			occurrences.push(VarOccurrence {
-				quote_start: tts[i].span().start(),
-				ident_end: id.span().end(),
-				name,
-			});
-			i += 2;
-			continue;
-		}
-		if let TokenTree::Group(g) = &tts[i] {
-			collect_vars(g.stream(), vars, occurrences);
-		}
-		i += 1;
-	}
-}
-
-/// Convert an absolute source `LineColumn` to a byte offset within `text`,
-/// given that the first character of `text` is at `text_start` in the source
-/// file.  Returns `text.len()` if `target` is at or past the end.
-///
-/// `LineColumn::line` is 1-indexed; `LineColumn::column` is 0-indexed (chars).
-fn offset_in_text(text: &str, text_start: LineColumn, target: LineColumn) -> usize {
-	let mut byte = 0usize;
-	let mut line = text_start.line;
-	let mut col = text_start.column;
-	for ch in text.chars() {
-		if line == target.line && col == target.column {
-			return byte;
-		}
-		byte += ch.len_utf8();
-		if ch == '\n' {
-			line += 1;
-			col = 0;
-		} else {
-			col += 1;
-		}
-	}
-	byte
-}
-
-/// Replace every `'var` occurrence in `body` with `_RUST_var` using the span
-/// positions in `occurrences`.  `body_start` is the absolute source position
-/// of the first character in `body`.
-fn substitute_vars_in_body(
-	body: &str,
-	body_start: LineColumn,
-	occurrences: &[VarOccurrence],
-) -> String {
-	let mut result = String::with_capacity(body.len() + occurrences.len() * 6);
-	let mut last_byte = 0usize;
-	for occ in occurrences {
-		let start = offset_in_text(body, body_start, occ.quote_start);
-		let end = offset_in_text(body, body_start, occ.ident_end);
-		result.push_str(&body[last_byte..start]);
-		result.push_str("_RUST_");
-		result.push_str(&occ.name);
-		last_byte = end;
-	}
-	result.push_str(&body[last_byte..]);
-	result
-}
-
-/// Fallback body reconstruction from tokens when `source_text()` is
-/// unavailable.  Performs `'var` → `_RUST_var` substitution at the token
-/// level.
-fn reconstruct_body_fallback(
-	tts: &[TokenTree],
-	start_idx: usize,
-	occurrences: &[VarOccurrence],
-) -> String {
-	// Index the quote positions so we can skip them during reconstruction.
-	let quote_positions: std::collections::HashSet<(usize, usize)> = occurrences
-		.iter()
-		.map(|o| (o.quote_start.line, o.quote_start.column))
-		.collect();
-
-	let mut parts: Vec<String> = Vec::new();
-	let mut i = start_idx;
-	while i < tts.len() {
-		let lc = tts[i].span().start();
-		if quote_positions.contains(&(lc.line, lc.column))
-			&& let Some(TokenTree::Ident(id)) = tts.get(i + 1)
-		{
-			parts.push(format!("_RUST_{id}"));
-			i += 2;
-			continue;
-		}
-		parts.push(tts[i].to_string());
-		i += 1;
-	}
-	parts.join(" ")
 }
 
 /// Scan `tts` for the first `[visibility] static <T> run` pattern and return the
 /// corresponding `JavaType` together with the index of the first token of the
 /// method declaration within `tts` (the visibility modifier if present, otherwise
-/// `static`) so the caller can split outer declarations from the method.
+/// `static`), and the index of the `run` identifier token.
+///
+/// Returns `(java_type, method_start_idx, run_idx)`.
 ///
 /// The visibility modifier (`public`, `private`, `protected`) is optional; plain
-/// `static <T> run()` is accepted in addition to `static <T> run()`.
-fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String> {
+/// `static <T> run()` is accepted in addition to `public static <T> run()`.
+fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize, usize), String> {
 	for i in 0..tts.len().saturating_sub(2) {
 		if !matches!(&tts[i], TokenTree::Ident(id) if id == "static") {
 			continue;
@@ -646,8 +640,9 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String>
 			let type_name = type_id.to_string();
 
 			if matches!(tts.get(i + 2), Some(TokenTree::Ident(id)) if id == "run") {
+				let run_idx = i + 2;
 				return ScalarType::from_primitive_name(&type_name)
-					.map(|s| (JavaType::Scalar(s), start))
+					.map(|s| (JavaType::Scalar(s), start, run_idx))
 					.ok_or_else(|| {
 						format!(
 							"inline_java: `run()` return type `{type_name}` is not supported; \
@@ -667,8 +662,9 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String>
 			if is_empty_bracket
 				&& matches!(tts.get(i + 3), Some(TokenTree::Ident(id)) if id == "run")
 			{
+				let run_idx = i + 3;
 				return ScalarType::from_primitive_name(&type_name)
-					.map(|s| (JavaType::Array(s), start))
+					.map(|s| (JavaType::Array(s), start, run_idx))
 					.ok_or_else(|| {
 						format!(
 							"inline_java: `run()` array element type `{type_name}` is not supported; \
@@ -687,8 +683,9 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String>
 			if matches!(tts.get(i + 4), Some(TokenTree::Punct(p)) if p.as_char() == '>')
 				&& matches!(tts.get(i + 5), Some(TokenTree::Ident(id)) if id == "run")
 			{
+				let run_idx = i + 5;
 				return ScalarType::from_boxed_name(&inner_name)
-					.map(|s| (JavaType::List(s), start))
+					.map(|s| (JavaType::List(s), start, run_idx))
 					.ok_or_else(|| {
 						format!(
 							"inline_java: `run()` List element type `{inner_name}` is not supported; \
@@ -710,8 +707,9 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String>
 			&& matches!(tts.get(i + 9), Some(TokenTree::Ident(id)) if id == "run")
 		{
 			let inner_name = inner_id.to_string();
+			let run_idx = i + 9;
 			return ScalarType::from_boxed_name(&inner_name)
-				.map(|s| (JavaType::List(s), start))
+				.map(|s| (JavaType::List(s), start, run_idx))
 				.ok_or_else(|| {
 					format!(
 						"inline_java: `run()` List element type `{inner_name}` is not supported; \
@@ -723,9 +721,74 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize), String>
 	Err("inline_java: could not find `static <type> run()` in Java body".to_string())
 }
 
+/// Parse the parameter list from the `Group(Parenthesis)` token immediately
+/// after the `run` identifier.  Returns `Vec<(ScalarType, param_name)>`.
+///
+/// Empty group → `Ok(vec![])`.
+/// Unknown/unsupported type → `Err(...)` with a helpful message.
+fn parse_run_params(tts: &[TokenTree]) -> Result<Vec<(ScalarType, String)>, String> {
+	// tts[0] must be the parenthesis group immediately after `run`.
+	let group = match tts.first() {
+		Some(TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::Parenthesis => g,
+		_ => return Ok(vec![]),
+	};
+
+	let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+	if inner.is_empty() {
+		return Ok(vec![]);
+	}
+
+	// Split on ',' to get segments, one per parameter.
+	let mut params = Vec::new();
+	let mut segments: Vec<Vec<TokenTree>> = Vec::new();
+	let mut current: Vec<TokenTree> = Vec::new();
+	for tt in inner {
+		if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
+			segments.push(std::mem::take(&mut current));
+		} else {
+			current.push(tt);
+		}
+	}
+	if !current.is_empty() {
+		segments.push(current);
+	}
+
+	for seg in segments {
+		if seg.is_empty() {
+			continue;
+		}
+		// First Ident = Java type name, last Ident = parameter name.
+		let type_name = match seg.first() {
+			Some(TokenTree::Ident(id)) => id.to_string(),
+			_ => {
+				return Err(format!(
+					"inline_java: unexpected token in run() parameter list: expected a type name"
+				));
+			}
+		};
+		let param_name = match seg.last() {
+			Some(TokenTree::Ident(id)) => id.to_string(),
+			_ => {
+				return Err(format!(
+					"inline_java: unexpected token in run() parameter list: expected a parameter name"
+				));
+			}
+		};
+		let scalar_type = ScalarType::from_primitive_name(&type_name).ok_or_else(|| {
+			format!(
+				"inline_java: unsupported run() parameter type `{type_name}`; \
+				 supported types: byte short int long float double boolean char String"
+			)
+		})?;
+		params.push((scalar_type, param_name));
+	}
+
+	Ok(params)
+}
+
 /// Unified parser: walks the token stream once to separate `import`/`package`
-/// directives from the method body, identify the `run()` return type, and
-/// collect `'var` injections.
+/// directives from the method body, identify the `run()` return type and
+/// parameters.
 ///
 /// Rather than reconstructing strings from the token tree (which loses
 /// whitespace), it uses `Span::join` + `Span::source_text` to slice the
@@ -770,19 +833,14 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 	}
 	let body_start = first_body_idx.unwrap_or(tts.len());
 
-	// Parse return type from body tokens
-	// Also returns the index (relative to body_start) of the `public` token
-	// so we can split outer class declarations from the run() method.
-	let (java_type, run_rel_idx) = parse_run_return_type(&tts[body_start..])?;
+	// Parse return type and run index from body tokens.
+	let (java_type, run_rel_idx, run_rel_run_idx) =
+		parse_run_return_type(&tts[body_start..])?;
 	let run_abs_idx = body_start + run_rel_idx;
+	let run_token_abs_idx = body_start + run_rel_run_idx;
 
-	// Collect vars from body (recursively into Groups)
-	let mut vars: BTreeMap<String, Ident> = BTreeMap::new();
-	let mut occurrences: Vec<VarOccurrence> = Vec::new();
-	let body_stream: proc_macro2::TokenStream = tts[body_start..].iter().cloned().collect();
-	collect_vars(body_stream, &mut vars, &mut occurrences);
-	// Ensure occurrences are in source order for sequential substitution.
-	occurrences.sort_by_key(|o| (o.quote_start.line, o.quote_start.column));
+	// Parse run() parameters from the token immediately after `run`.
+	let params = parse_run_params(&tts[run_token_abs_idx + 1..])?;
 
 	// Extract text via source_text()
 
@@ -813,22 +871,18 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 	// outer: any tokens between the end of imports and the `run` method declaration
 	let outer = slice_text(body_start, run_abs_idx);
 
-	// body: from the `run` method declaration to end, with var substitution.
+	// body: from the `run` method declaration to end (verbatim, no substitution).
 	let body = if run_abs_idx < tts.len() {
 		let start_span = tts[run_abs_idx].span();
 		let end_span = tts.last().unwrap().span();
-		let body_start_lc = start_span.start();
-
-		// occurrences is sorted; skip any that fall in the outer section.
-		let first_in_body = occurrences.partition_point(|o| {
-			(o.quote_start.line, o.quote_start.column) < (body_start_lc.line, body_start_lc.column)
-		});
-		let body_occurrences = &occurrences[first_in_body..];
 
 		match start_span.join(end_span).and_then(|s| s.source_text()) {
-			Some(raw) if body_occurrences.is_empty() => raw,
-			Some(raw) => substitute_vars_in_body(&raw, body_start_lc, body_occurrences),
-			None => reconstruct_body_fallback(&tts, run_abs_idx, &occurrences),
+			Some(raw) => raw,
+			None => tts[run_abs_idx..]
+				.iter()
+				.map(std::string::ToString::to_string)
+				.collect::<Vec<_>>()
+				.join(" "),
 		}
 	} else {
 		String::new()
@@ -838,12 +892,81 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 		imports,
 		outer,
 		body,
-		vars,
+		params,
 		java_type,
 	})
 }
 
-/// Compile and run Java code at *program runtime*, returning the value of `run()`.
+// Shared code-generation helper used by both java! and java_fn!
+
+/// Generate a `fn __java_runner(...) -> Result<T, JavaError>` token stream
+/// used by both `java!` and `java_fn!`.  The caller decides whether to emit
+/// `__java_runner()` (immediate call, `java!`) or `__java_runner` (return
+/// the function, `java_fn!`).
+fn make_runner_fn(
+	parsed: ParsedJava,
+	opts: JavaOpts,
+	prefix: &str,
+) -> proc_macro2::TokenStream {
+	let ParsedJava {
+		imports,
+		outer,
+		body,
+		params,
+		java_type,
+	} = parsed;
+
+	let class_name = make_class_name(prefix, &imports, &outer, &body, &opts);
+	let filename = format!("{class_name}.java");
+	let full_class_name = qualify_class_name(&class_name, &imports);
+
+	let main_method = java_type.java_main(&params);
+	let java_class = format_java_class(&imports, &outer, &class_name, &body, &main_method);
+
+	let javac_raw = opts.javac_args.unwrap_or_default();
+	let java_raw = opts.java_args.unwrap_or_default();
+	let deser = java_type.rust_deser();
+	let ret_ty = java_type.rust_return_type_ts();
+
+	// Build Rust parameter list for the generated function signature.
+	// String params use `&str`.
+	let fn_params: Vec<proc_macro2::TokenStream> = params
+		.iter()
+		.map(|(ty, name)| {
+			let ident = proc_macro2::Ident::new(name, proc_macro2::Span::call_site());
+			let param_ty = ty.rust_param_type_ts();
+			quote! { #ident: #param_ty }
+		})
+		.collect();
+
+	// Build serialization statements for each parameter.
+	let ser_stmts: Vec<proc_macro2::TokenStream> = params
+		.iter()
+		.map(|(ty, name)| {
+			let ident = proc_macro2::Ident::new(name, proc_macro2::Span::call_site());
+			ty.rust_ser_ts(&ident)
+		})
+		.collect();
+
+	quote! {
+		fn __java_runner(#(#fn_params),*) -> ::std::result::Result<#ret_ty, ::inline_java::JavaError> {
+			let mut _stdin_bytes: ::std::vec::Vec<u8> = ::std::vec::Vec::new();
+			#(#ser_stmts)*
+			let _raw = ::inline_java::run_java(
+				#class_name,
+				#filename,
+				#java_class,
+				#full_class_name,
+				#javac_raw,
+				#java_raw,
+				&_stdin_bytes,
+			)?;
+			::std::result::Result::Ok(#deser)
+		}
+	}
+}
+
+/// Compile and run zero-argument Java code at *program runtime*.
 ///
 /// Wraps the provided Java body in a generated class, compiles it with `javac`,
 /// and executes it with `java`.  The return value of `static T run()` is
@@ -852,6 +975,8 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 ///
 /// Expands to `Result<T, inline_java::JavaError>`, so callers can propagate
 /// errors with `?` or surface them with `.unwrap()`.
+///
+/// For `run()` methods that take parameters, use [`java_fn!`] instead.
 ///
 /// # Options
 ///
@@ -863,11 +988,6 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 ///
 /// `$INLINE_JAVA_CP` in either option expands to the class-output directory.
 ///
-/// # Variable injection
-///
-/// Rust variables can be injected using `'var` syntax.  Each `'var` becomes
-/// the Java `String _RUST_var` static field, passed via `args[]`.
-///
 /// # Examples
 ///
 /// ```text
@@ -877,15 +997,6 @@ fn parse_java_source(stream: proc_macro2::TokenStream) -> Result<ParsedJava, Str
 /// let x: i32 = java! {
 ///     static int run() {
 ///         return 42;
-///     }
-/// }.unwrap();
-///
-/// // Variable injection
-/// let n: i32 = 21;
-/// let doubled: i32 = java! {
-///     static int run() {
-///         int value = Integer.parseInt('n);
-///         return value * 2;
 ///     }
 /// }.unwrap();
 ///
@@ -923,62 +1034,89 @@ pub fn java(input: TokenStream) -> TokenStream {
 		Err(msg) => return quote! { compile_error!(#msg) }.into(),
 	};
 
-	let ParsedJava {
-		imports,
-		outer,
-		body,
-		vars,
-		java_type,
-	} = parsed;
-
-	// Unique class name derived from source content and compilation options.
-	// opts are included so that two call sites with the same body but different
-	// javac/java args get separate temp dirs (and separate .done sentinels).
-	let class_name = make_class_name("InlineJava", &imports, &outer, &body, &opts);
-	let filename = format!("{class_name}.java");
-
-	// If the user wrote a `package` declaration, the class must be run by its
-	// fully-qualified name (e.g. `com.example.demo.InlineJava_xxx`).
-	let full_class_name = qualify_class_name(&class_name, &imports);
-
-	// `static String _RUST_foo;` declarations, one per captured variable.
-	let var_fields: String = vars.keys().fold(String::new(), |mut s, name| {
-		writeln!(s, "\tstatic String _RUST_{name};").unwrap();
-		s
-	});
-
-	// Assignments inside main: `_RUST_foo = args[0];` in alphabetical order.
-	let var_inits: String = vars
-		.keys()
-		.enumerate()
-		.fold(String::new(), |mut s, (i, name)| {
-			writeln!(s, "\t\t_RUST_{name} = args[{i}];").unwrap();
-			s
-		});
-
-	let main_method = java_type.java_main(&var_inits);
-	let java_class = format_java_class(&imports, &outer, &class_name, &var_fields, &body, &main_method);
-
-	// Option strings are baked into the generated code as string literals;
-	// shell expansion happens at program runtime via `inline_java::run_java`.
-	let javac_raw = opts.javac_args.unwrap_or_default();
-	let java_raw = opts.java_args.unwrap_or_default();
-	let var_idents: Vec<Ident> = vars.values().cloned().collect();
-	let deser = java_type.rust_deser();
+	let runner_fn = make_runner_fn(parsed, opts, "InlineJava");
 
 	let generated = quote! {
-		(|| -> ::std::result::Result<_, ::inline_java::JavaError> {
-			let _raw = ::inline_java::run_java(
-				#class_name,
-				#filename,
-				#java_class,
-				#full_class_name,
-				#javac_raw,
-				#java_raw,
-				&[#(::std::string::ToString::to_string(&#var_idents)),*],
-			)?;
-			::std::result::Result::Ok(#deser)
-		})()
+		{
+			#runner_fn
+			__java_runner()
+		}
+	};
+
+	generated.into()
+}
+
+/// Return a typed Rust function that compiles and runs Java at *program runtime*.
+///
+/// Like [`java!`], but supports parameters.  The parameters declared in the
+/// Java `run(P1 p1, P2 p2, ...)` method become the Rust function's parameters.
+/// Arguments are serialised by Rust and piped to the Java process via stdin;
+/// Java reads them with `DataInputStream`.
+///
+/// Expands to a function value of type `fn(P1, P2, ...) -> Result<T, JavaError>`.
+/// Call it immediately or store it in a variable.
+///
+/// # Supported parameter types
+///
+/// | Java type | Rust type |
+/// |-----------|-----------|
+/// | `byte`    | `i8`      |
+/// | `short`   | `i16`     |
+/// | `int`     | `i32`     |
+/// | `long`    | `i64`     |
+/// | `float`   | `f32`     |
+/// | `double`  | `f64`     |
+/// | `boolean` | `bool`    |
+/// | `char`    | `char`    |
+/// | `String`  | `&str`    |
+///
+/// # Options
+///
+/// Same `javac = "..."` / `java = "..."` key-value pairs as [`java!`].
+///
+/// # Examples
+///
+/// ```text
+/// use inline_java::java_fn;
+///
+/// // Single int parameter
+/// let double_it = java_fn! {
+///     static int run(int n) {
+///         return n * 2;
+///     }
+/// };
+/// let result: i32 = double_it(21).unwrap();
+/// assert_eq!(result, 42);
+///
+/// // Multiple parameters including String
+/// let greet = java_fn! {
+///     static String run(String greeting, String target) {
+///         return greeting + ", " + target + "!";
+///     }
+/// };
+/// let msg: String = greet("Hello", "World").unwrap();
+/// assert_eq!(msg, "Hello, World!");
+/// ```
+#[proc_macro]
+#[allow(clippy::similar_names)]
+pub fn java_fn(input: TokenStream) -> TokenStream {
+	let input2 = proc_macro2::TokenStream::from(input);
+
+	// Consume any leading `key = "value",` option pairs.
+	let (opts, input2) = extract_opts(input2);
+
+	let parsed = match parse_java_source(input2) {
+		Ok(p) => p,
+		Err(msg) => return quote! { compile_error!(#msg) }.into(),
+	};
+
+	let runner_fn = make_runner_fn(parsed, opts, "InlineJava");
+
+	let generated = quote! {
+		{
+			#runner_fn
+			__java_runner
+		}
 	};
 
 	generated.into()
@@ -1044,8 +1182,8 @@ fn ct_java_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStr
 	let filename = format!("{class_name}.java");
 	let full_class_name = qualify_class_name(&class_name, &imports);
 
-	let main_method = java_type.java_main("");
-	let java_class = format_java_class(&imports, &outer, &class_name, "", &body, &main_method);
+	let main_method = java_type.java_main(&[]);
+	let java_class = format_java_class(&imports, &outer, &class_name, &body, &main_method);
 
 	let bytes = compile_run_java_now(
 		&class_name,
@@ -1123,7 +1261,7 @@ fn try_parse_opt(tts: &[TokenTree]) -> Option<(String, String, usize)> {
 	Some((key, value, 3))
 }
 
-// Shared helpers used by both java! and ct_java!
+// Shared helpers used by java!, java_fn!, and ct_java!
 
 /// Compute a deterministic class name by hashing the source and options.
 /// `prefix` distinguishes runtime ("`InlineJava`") from compile-time ("`CtJava`").
@@ -1170,18 +1308,16 @@ fn compile_run_java_now(
 	.map_err(|e| e.to_string())
 }
 
-/// Render the complete `.java` source file.  Pass `var_fields = ""` when
-/// there are no injected Rust variables (i.e. for `ct_java!`).
+/// Render the complete `.java` source file.
 fn format_java_class(
 	imports: &str,
 	outer: &str,
 	class_name: &str,
-	var_fields: &str,
 	body: &str,
 	main_method: &str,
 ) -> String {
 	format!(
-		"{imports}\n{outer}\npublic class {class_name} {{\n{var_fields}\n{body}\n\n{main_method}\n}}\n"
+		"{imports}\n{outer}\npublic class {class_name} {{\n\n{body}\n\n{main_method}\n}}\n"
 	)
 }
 
