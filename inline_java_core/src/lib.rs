@@ -9,6 +9,9 @@
 //!   `java_fn!` macros at program runtime.
 //! - [`run_java`] — compile (if needed) and run a generated Java class.
 //! - [`expand_java_args`] — shell-expand an option string into individual args.
+//! - [`cache_dir`] — compute the deterministic temp-dir path for a Java class.
+
+use shellexpand::full_with_context_no_errors;
 
 /// All errors that `java!` and `java_fn!` can return at runtime (and that
 /// `ct_java!` maps to `compile_error!` diagnostics at build time).
@@ -61,7 +64,7 @@ pub fn expand_java_args(raw: &str, inline_java_cp: &str) -> Vec<String> {
 		return Vec::new();
 	}
 	let cp = inline_java_cp.to_owned();
-	let expanded = shellexpand::full_with_context_no_errors(
+	let expanded = full_with_context_no_errors(
 		raw,
 		|| std::env::var("HOME").ok(),
 		move |var| match var {
@@ -96,6 +99,78 @@ fn split_args(s: &str) -> Vec<String> {
 		args.push(cur);
 	}
 	args
+}
+
+/// Shell-expand `opts` and canonicalize any relative path tokens against the
+/// current working directory.
+///
+/// Steps:
+/// 1. Shell-expand environment variables and `~` in `opts`.
+/// 2. Split the result on whitespace.
+/// 3. For each token that `Path::new(tok).is_relative()`, replace it with the
+///    absolute path produced by `std::path::absolute(tok)` (falling back to the
+///    original token on error).
+/// 4. Rejoin with `" "` and return.
+///
+/// This ensures that opts strings like `-cp .` produce a cache key that is
+/// stable with respect to the actual directory they refer to, not the
+/// syntactic form of the path token.
+fn normalize_opts(opts: &str) -> String {
+	if opts.is_empty() {
+		return String::new();
+	}
+	let expanded = full_with_context_no_errors(
+		opts,
+		|| std::env::var("HOME").ok(),
+		|var| std::env::var(var).ok(),
+	);
+	expanded
+		.split_whitespace()
+		.map(|tok| {
+			if std::path::Path::new(tok).is_relative() {
+				std::path::absolute(tok)
+					.map(|p| p.to_string_lossy().into_owned())
+					.unwrap_or_else(|_| tok.to_owned())
+			} else {
+				tok.to_owned()
+			}
+		})
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+/// Compute the deterministic temp-dir path used to cache compiled `.class` files.
+///
+/// The path is `<system_temp>/<class_name>_<hex_hash>/` where `hex_hash` is a
+/// 64-bit hash of:
+/// - `java_class` — the complete Java source text
+/// - normalized `javac_raw` — shell-expanded javac option string with relative
+///   paths resolved to absolute paths
+/// - normalized `java_raw`  — shell-expanded java option string with relative
+///   paths resolved to absolute paths
+///
+/// Because relative paths are resolved to absolute paths before hashing, the
+/// cache key is stable regardless of which syntactic form is used for a path
+/// (e.g. `-cp .` in `/tmp/dir_a` and `-cp /tmp/dir_a` produce the same key),
+/// and two invocations from different working directories produce different
+/// keys only when they actually refer to different directories.
+#[must_use]
+pub fn cache_dir(
+	class_name: &str,
+	java_class: &str,
+	javac_raw: &str,
+	java_raw: &str,
+) -> std::path::PathBuf {
+	use std::collections::hash_map::DefaultHasher;
+	use std::hash::{Hash, Hasher};
+
+	let mut h = DefaultHasher::new();
+	java_class.hash(&mut h);
+	normalize_opts(javac_raw).hash(&mut h);
+	normalize_opts(java_raw).hash(&mut h);
+
+	let hex = format!("{:016x}", h.finish());
+	std::env::temp_dir().join(format!("{class_name}_{hex}"))
 }
 
 /// Compile (if needed) and run a generated Java class, returning raw stdout bytes.
@@ -146,7 +221,7 @@ pub fn run_java(
 	use std::io::Write;
 	use std::process::Stdio;
 
-	let tmp_dir = std::env::temp_dir().join(class_name);
+	let tmp_dir = cache_dir(class_name, java_class, javac_raw, java_raw);
 	let cp = tmp_dir.to_string_lossy().into_owned();
 	let javac_extra = expand_java_args(javac_raw, &cp);
 	let java_extra = expand_java_args(java_raw, &cp);
@@ -224,4 +299,84 @@ pub fn run_java(
 	}
 
 	Ok(out.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::normalize_opts;
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: dot resolves to the current working directory.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_dot_resolves_to_cwd() {
+		let cwd = std::env::current_dir()
+			.unwrap()
+			.to_string_lossy()
+			.into_owned();
+		assert_eq!(
+			normalize_opts("."),
+			cwd,
+			"normalize_opts(\".\") should equal the current working directory"
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: "-cp ." contains the current working directory.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_cp_dot_contains_cwd() {
+		let cwd = std::env::current_dir()
+			.unwrap()
+			.to_string_lossy()
+			.into_owned();
+		let result = normalize_opts("-cp .");
+		assert!(
+			result.contains(&cwd),
+			"normalize_opts(\"-cp .\") should contain the cwd; got: {result}"
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: absolute path tokens are left unchanged; non-path flag
+	// tokens like "-cp" are relative in the Path sense but that is harmless.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_absolute_path_unchanged() {
+		// An absolute path token (/usr/lib) must be passed through as-is.
+		let result = normalize_opts("-cp /usr/lib");
+		assert!(
+			result.contains("/usr/lib"),
+			"the absolute path token /usr/lib must appear unchanged; got: {result}"
+		);
+		assert!(
+			result.ends_with("/usr/lib"),
+			"the absolute path token must not be modified; got: {result}"
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: a relative hidden-file token is resolved to an absolute
+	// path (it is still relative to CWD, regardless of the leading dot).
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_hidden_relative_resolved() {
+		let cwd = std::env::current_dir()
+			.unwrap()
+			.to_string_lossy()
+			.into_owned();
+		let result = normalize_opts("-cp .hidden");
+		assert!(
+			result.contains(&cwd),
+			"normalize_opts(\"-cp .hidden\") should resolve .hidden against cwd; got: {result}"
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: empty string returns empty string.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_empty() {
+		assert_eq!(normalize_opts(""), "");
+	}
 }
