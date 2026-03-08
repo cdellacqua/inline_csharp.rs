@@ -53,7 +53,12 @@
 //!
 //! `byte`/`short`/`int`/`long`/`float`/`double`/`boolean`/`char`/`String`
 //! map to the obvious Rust types.  `T[]` and `List<BoxedT>` both map to
-//! `Vec<T>`.
+//! `Vec<T>`.  `Optional<BoxedT>` maps to `Option<T>`.
+//!
+//! # Supported parameter types (`java_fn!`)
+//!
+//! The scalar types above plus `Optional<BoxedT>` → `Option<T>`
+//! (or `Option<&str>` for `Optional<String>`).
 
 /// Re-export the proc macros so users only need to depend on this crate.
 pub use inline_java_macros::{ct_java, java, java_fn};

@@ -10,7 +10,7 @@
 //!
 //! All macros require the user to write a `static <T> run(...)` method
 //! where `T` is one of: `byte`, `short`, `int`, `long`, `float`, `double`,
-//! `boolean`, `char`, `String`, `T[]`, or `List<BoxedT>`.
+//! `boolean`, `char`, `String`, `T[]`, `List<BoxedT>`, or `Optional<BoxedT>`.
 //!
 //! # Wire format (Java → Rust, stdout)
 //!
@@ -283,6 +283,84 @@ impl ScalarType {
 	}
 }
 
+// ParamType — wraps ScalarType with an Optional variant for run() parameters
+
+#[derive(Clone, Copy, PartialEq)]
+enum ParamType {
+	Scalar(ScalarType),
+	Optional(ScalarType),
+}
+
+impl ParamType {
+	/// Rust parameter type for `java_fn!` function signatures.
+	/// For `Optional(String)` the inner type is `&str`.
+	fn rust_param_type_ts(self) -> proc_macro2::TokenStream {
+		match self {
+			Self::Scalar(s) => s.rust_param_type_ts(),
+			Self::Optional(s) => {
+				let inner = s.rust_param_type_ts(); // uses &str for String
+				quote! { ::std::option::Option<#inner> }
+			}
+		}
+	}
+
+	/// Generates Rust code to serialize one parameter value into `_stdin_bytes: Vec<u8>`.
+	fn rust_ser_ts(self, param_ident: &Ident) -> proc_macro2::TokenStream {
+		match self {
+			Self::Scalar(s) => s.rust_ser_ts(param_ident),
+			Self::Optional(s) => {
+				let inner_ident = Ident::new("_inner", proc_macro2::Span::call_site());
+				let inner_ser = s.rust_ser_ts(&inner_ident);
+				quote! {
+					match #param_ident {
+						::std::option::Option::None => _stdin_bytes.push(0u8),
+						::std::option::Option::Some(_inner) => {
+							_stdin_bytes.push(1u8);
+							#inner_ser
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/// Generates Java statement(s) to read this type from a `DataInputStream` named `_dis`.
+	fn java_dis_read(self, param_name: &str) -> String {
+		match self {
+			Self::Scalar(s) => s.java_dis_read(param_name),
+			Self::Optional(s) => {
+				let boxed = s.java_boxed_name();
+				if s == ScalarType::Str {
+					format!(
+						"int _tag_{param_name} = _dis.readUnsignedByte();\n\
+						 \t\tjava.util.Optional<String> {param_name};\n\
+						 \t\tif (_tag_{param_name} != 0) {{\n\
+						 \t\t\tint _len_{param_name} = _dis.readInt();\n\
+						 \t\t\tbyte[] _b_{param_name} = new byte[_len_{param_name}];\n\
+						 \t\t\t_dis.readFully(_b_{param_name});\n\
+						 \t\t\t{param_name} = java.util.Optional.of(new String(_b_{param_name}, java.nio.charset.StandardCharsets.UTF_8));\n\
+						 \t\t}} else {{\n\
+						 \t\t\t{param_name} = java.util.Optional.empty();\n\
+						 \t\t}}"
+					)
+				} else {
+					let write_method = s.dos_write_method().unwrap();
+					let read_method = write_method.replacen("write", "read", 1);
+					format!(
+						"int _tag_{param_name} = _dis.readUnsignedByte();\n\
+						 \t\tjava.util.Optional<{boxed}> {param_name};\n\
+						 \t\tif (_tag_{param_name} != 0) {{\n\
+						 \t\t\t{param_name} = java.util.Optional.of(_dis.{read_method}());\n\
+						 \t\t}} else {{\n\
+						 \t\t\t{param_name} = java.util.Optional.empty();\n\
+						 \t\t}}"
+					)
+				}
+			}
+		}
+	}
+}
+
 // JavaType — allowed return types for run(), with serialisation/deserialisation
 
 #[derive(Clone, Copy, PartialEq)]
@@ -292,6 +370,8 @@ enum JavaType {
 	Array(ScalarType),
 	/// Java `List<BoxedT>` — same wire format / Rust type as `Array`.
 	List(ScalarType),
+	/// Java `Optional<BoxedT>` — returned as `Option<T>`.
+	Optional(ScalarType),
 }
 
 impl JavaType {
@@ -299,7 +379,7 @@ impl JavaType {
 	/// `run()`'s return value to stdout.  `params` lists the parameters declared
 	/// in `run(...)` so the generated `main` can read them from stdin and forward
 	/// them to `run`.
-	fn java_main(self, params: &[(ScalarType, String)]) -> String {
+	fn java_main(self, params: &[(ParamType, String)]) -> String {
 		// Build DataInputStream setup + parameter reads (only if there are params).
 		let param_reads = if params.is_empty() {
 			String::new()
@@ -374,6 +454,32 @@ impl JavaType {
 					 \t}}"
 				)
 			}
+			Self::Optional(s) => {
+				let boxed = s.java_boxed_name();
+				let present_body = if s == ScalarType::Str {
+					format!(
+						"byte[] _b = _opt.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);\n\
+						 \t\t\t_dos.writeInt(_b.length);\n\
+						 \t\t\t_dos.write(_b, 0, _b.length);"
+					)
+				} else {
+					let method = s.dos_write_method().unwrap();
+					format!("_dos.{method}(_opt.get());")
+				};
+				format!(
+					"\tpublic static void main(String[] args) throws Exception {{\n\
+					 {param_reads}\t\tjava.util.Optional<{boxed}> _opt = run({run_args});\n\
+					 \t\tjava.io.DataOutputStream _dos = new java.io.DataOutputStream(System.out);\n\
+					 \t\tif (_opt.isPresent()) {{\n\
+					 \t\t\t_dos.writeByte(1);\n\
+					 \t\t\t{present_body}\n\
+					 \t\t}} else {{\n\
+					 \t\t\t_dos.writeByte(0);\n\
+					 \t\t}}\n\
+					 \t\t_dos.flush();\n\
+					 \t}}"
+				)
+			}
 		}
 	}
 
@@ -384,6 +490,10 @@ impl JavaType {
 			Self::Array(s) | Self::List(s) => {
 				let inner = s.rust_type_ts();
 				quote! { ::std::vec::Vec<#inner> }
+			}
+			Self::Optional(s) => {
+				let inner = s.rust_type_ts();
+				quote! { ::std::option::Option<#inner> }
 			}
 		}
 	}
@@ -446,6 +556,47 @@ impl JavaType {
 					}
 				}
 			}
+			Self::Optional(s) => match s {
+				ScalarType::Byte => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(i8::from_be_bytes([_raw[1]])) }
+				},
+				ScalarType::Short => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(i16::from_be_bytes([_raw[1], _raw[2]])) }
+				},
+				ScalarType::Int => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(i32::from_be_bytes([_raw[1], _raw[2], _raw[3], _raw[4]])) }
+				},
+				ScalarType::Long => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(i64::from_be_bytes([_raw[1],_raw[2],_raw[3],_raw[4],_raw[5],_raw[6],_raw[7],_raw[8]])) }
+				},
+				ScalarType::Float => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(f32::from_bits(u32::from_be_bytes([_raw[1],_raw[2],_raw[3],_raw[4]]))) }
+				},
+				ScalarType::Double => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(f64::from_bits(u64::from_be_bytes([_raw[1],_raw[2],_raw[3],_raw[4],_raw[5],_raw[6],_raw[7],_raw[8]]))) }
+				},
+				ScalarType::Boolean => quote! {
+					if _raw[0] == 0 { ::std::option::Option::None } else { ::std::option::Option::Some(_raw[1] != 0) }
+				},
+				ScalarType::Char => quote! {
+					if _raw[0] == 0 {
+						::std::option::Option::None
+					} else {
+						::std::option::Option::Some(
+							::std::char::from_u32(u16::from_be_bytes([_raw[1], _raw[2]]) as u32)
+								.ok_or(::inline_java::JavaError::InvalidChar)?
+						)
+					}
+				},
+				ScalarType::Str => quote! {
+					if _raw[0] == 0 {
+						::std::option::Option::None
+					} else {
+						let _slen = i32::from_be_bytes([_raw[1], _raw[2], _raw[3], _raw[4]]) as usize;
+						::std::option::Option::Some(::std::string::String::from_utf8(_raw[5..5 + _slen].to_vec())?)
+					}
+				},
+			},
 		}
 	}
 
@@ -484,6 +635,22 @@ impl JavaType {
 				let array_expr = format!("[{}]", lits.join(", "));
 				proc_macro2::TokenStream::from_str(&array_expr)
 					.map_err(|e| format!("ct_java: produced invalid Rust tokens: {e}"))
+			}
+			Self::Optional(s) => {
+				if bytes.is_empty() {
+					return Err("ct_java: optional output is empty".to_string());
+				}
+				if bytes[0] == 0 {
+					proc_macro2::TokenStream::from_str("::std::option::Option::None")
+						.map_err(|e| format!("ct_java: produced invalid Rust token: {e}"))
+				} else {
+					// For Scalar String ct_java_tokens special-cases raw UTF-8.
+					// For Optional String the Java side writes writeByte(1) + writeInt(len) + bytes,
+					// so bytes[1..] is length-prefixed — scalar_ct_lit(Str, …) handles that correctly.
+					let (lit, _) = scalar_ct_lit(s, &bytes[1..])?;
+					proc_macro2::TokenStream::from_str(&format!("::std::option::Option::Some({lit})"))
+						.map_err(|e| format!("ct_java: produced invalid Rust token: {e}"))
+				}
 			}
 		}
 	}
@@ -605,7 +772,7 @@ struct ParsedJava {
 	/// Placed inside the generated wrapper class.
 	body: String,
 	/// Parameters declared in `run(...)`, in order.
-	params: Vec<(ScalarType, String)>,
+	params: Vec<(ParamType, String)>,
 	/// Return type of the `static T run(...)` method.
 	java_type: JavaType,
 }
@@ -717,16 +884,58 @@ fn parse_run_return_type(tts: &[TokenTree]) -> Result<(JavaType, usize, usize), 
 					)
 				});
 		}
+
+		// Pattern 5: [vis] static Optional < BoxedT > run
+		if matches!(tts.get(i + 1), Some(TokenTree::Ident(id)) if id == "Optional")
+			&& matches!(tts.get(i + 2), Some(TokenTree::Punct(p)) if p.as_char() == '<')
+			&& let Some(TokenTree::Ident(inner_id)) = tts.get(i + 3)
+			&& matches!(tts.get(i + 4), Some(TokenTree::Punct(p)) if p.as_char() == '>')
+			&& matches!(tts.get(i + 5), Some(TokenTree::Ident(id)) if id == "run")
+		{
+			let inner_name = inner_id.to_string();
+			let run_idx = i + 5;
+			return ScalarType::from_boxed_name(&inner_name)
+				.map(|s| (JavaType::Optional(s), start, run_idx))
+				.ok_or_else(|| {
+					format!(
+						"inline_java: `run()` Optional element type `{inner_name}` is not supported; \
+						 supported types: Byte Short Integer Long Float Double Boolean Character String"
+					)
+				});
+		}
+
+		// Pattern 6: [vis] static java.util.Optional < BoxedT > run
+		if matches!(tts.get(i + 1), Some(TokenTree::Ident(id)) if id == "java")
+			&& matches!(tts.get(i + 2), Some(TokenTree::Punct(p)) if p.as_char() == '.')
+			&& matches!(tts.get(i + 3), Some(TokenTree::Ident(id)) if id == "util")
+			&& matches!(tts.get(i + 4), Some(TokenTree::Punct(p)) if p.as_char() == '.')
+			&& matches!(tts.get(i + 5), Some(TokenTree::Ident(id)) if id == "Optional")
+			&& matches!(tts.get(i + 6), Some(TokenTree::Punct(p)) if p.as_char() == '<')
+			&& let Some(TokenTree::Ident(inner_id)) = tts.get(i + 7)
+			&& matches!(tts.get(i + 8), Some(TokenTree::Punct(p)) if p.as_char() == '>')
+			&& matches!(tts.get(i + 9), Some(TokenTree::Ident(id)) if id == "run")
+		{
+			let inner_name = inner_id.to_string();
+			let run_idx = i + 9;
+			return ScalarType::from_boxed_name(&inner_name)
+				.map(|s| (JavaType::Optional(s), start, run_idx))
+				.ok_or_else(|| {
+					format!(
+						"inline_java: `run()` Optional element type `{inner_name}` is not supported; \
+						 supported types: Byte Short Integer Long Float Double Boolean Character String"
+					)
+				});
+		}
 	}
 	Err("inline_java: could not find `static <type> run()` in Java body".to_string())
 }
 
 /// Parse the parameter list from the `Group(Parenthesis)` token immediately
-/// after the `run` identifier.  Returns `Vec<(ScalarType, param_name)>`.
+/// after the `run` identifier.  Returns `Vec<(ParamType, param_name)>`.
 ///
 /// Empty group → `Ok(vec![])`.
 /// Unknown/unsupported type → `Err(...)` with a helpful message.
-fn parse_run_params(tts: &[TokenTree]) -> Result<Vec<(ScalarType, String)>, String> {
+fn parse_run_params(tts: &[TokenTree]) -> Result<Vec<(ParamType, String)>, String> {
 	// tts[0] must be the parenthesis group immediately after `run`.
 	let group = match tts.first() {
 		Some(TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::Parenthesis => g,
@@ -739,6 +948,8 @@ fn parse_run_params(tts: &[TokenTree]) -> Result<Vec<(ScalarType, String)>, Stri
 	}
 
 	// Split on ',' to get segments, one per parameter.
+	// Note: commas inside angle brackets (e.g. Map<K,V>) would need special
+	// handling, but we don't support those types so simple splitting is fine.
 	let mut params = Vec::new();
 	let mut segments: Vec<Vec<TokenTree>> = Vec::new();
 	let mut current: Vec<TokenTree> = Vec::new();
@@ -757,21 +968,76 @@ fn parse_run_params(tts: &[TokenTree]) -> Result<Vec<(ScalarType, String)>, Stri
 		if seg.is_empty() {
 			continue;
 		}
-		// First Ident = Java type name, last Ident = parameter name.
+
+		// Pattern: Optional < BoxedT > name  (5 tokens)
+		if seg.len() == 5
+			&& matches!(&seg[0], TokenTree::Ident(id) if id == "Optional")
+			&& matches!(&seg[1], TokenTree::Punct(p) if p.as_char() == '<')
+			&& matches!(&seg[3], TokenTree::Punct(p) if p.as_char() == '>')
+		{
+			let inner_name = match &seg[2] {
+				TokenTree::Ident(id) => id.to_string(),
+				_ => return Err("inline_java: expected boxed type inside Optional<>".to_string()),
+			};
+			let param_name = match &seg[4] {
+				TokenTree::Ident(id) => id.to_string(),
+				_ => return Err("inline_java: expected parameter name after Optional<T>".to_string()),
+			};
+			let s = ScalarType::from_boxed_name(&inner_name).ok_or_else(|| {
+				format!(
+					"inline_java: unsupported Optional element type `{inner_name}`; \
+					 supported types: Byte Short Integer Long Float Double Boolean Character String"
+				)
+			})?;
+			params.push((ParamType::Optional(s), param_name));
+			continue;
+		}
+
+		// Pattern: java . util . Optional < BoxedT > name  (9 tokens)
+		if seg.len() == 9
+			&& matches!(&seg[0], TokenTree::Ident(id) if id == "java")
+			&& matches!(&seg[1], TokenTree::Punct(p) if p.as_char() == '.')
+			&& matches!(&seg[2], TokenTree::Ident(id) if id == "util")
+			&& matches!(&seg[3], TokenTree::Punct(p) if p.as_char() == '.')
+			&& matches!(&seg[4], TokenTree::Ident(id) if id == "Optional")
+			&& matches!(&seg[5], TokenTree::Punct(p) if p.as_char() == '<')
+			&& matches!(&seg[7], TokenTree::Punct(p) if p.as_char() == '>')
+		{
+			let inner_name = match &seg[6] {
+				TokenTree::Ident(id) => id.to_string(),
+				_ => return Err("inline_java: expected boxed type inside java.util.Optional<>".to_string()),
+			};
+			let param_name = match &seg[8] {
+				TokenTree::Ident(id) => id.to_string(),
+				_ => return Err("inline_java: expected parameter name after java.util.Optional<T>".to_string()),
+			};
+			let s = ScalarType::from_boxed_name(&inner_name).ok_or_else(|| {
+				format!(
+					"inline_java: unsupported Optional element type `{inner_name}`; \
+					 supported types: Byte Short Integer Long Float Double Boolean Character String"
+				)
+			})?;
+			params.push((ParamType::Optional(s), param_name));
+			continue;
+		}
+
+		// Fallback: primitive/String scalar — first Ident = type, last Ident = name.
 		let type_name = match seg.first() {
 			Some(TokenTree::Ident(id)) => id.to_string(),
 			_ => {
-				return Err(format!(
+				return Err(
 					"inline_java: unexpected token in run() parameter list: expected a type name"
-				));
+						.to_string(),
+				);
 			}
 		};
 		let param_name = match seg.last() {
 			Some(TokenTree::Ident(id)) => id.to_string(),
 			_ => {
-				return Err(format!(
+				return Err(
 					"inline_java: unexpected token in run() parameter list: expected a parameter name"
-				));
+						.to_string(),
+				);
 			}
 		};
 		let scalar_type = ScalarType::from_primitive_name(&type_name).ok_or_else(|| {
@@ -780,7 +1046,7 @@ fn parse_run_params(tts: &[TokenTree]) -> Result<Vec<(ScalarType, String)>, Stri
 				 supported types: byte short int long float double boolean char String"
 			)
 		})?;
-		params.push((scalar_type, param_name));
+		params.push((ParamType::Scalar(scalar_type), param_name));
 	}
 
 	Ok(params)
@@ -1058,17 +1324,19 @@ pub fn java(input: TokenStream) -> TokenStream {
 ///
 /// # Supported parameter types
 ///
-/// | Java type | Rust type |
-/// |-----------|-----------|
-/// | `byte`    | `i8`      |
-/// | `short`   | `i16`     |
-/// | `int`     | `i32`     |
-/// | `long`    | `i64`     |
-/// | `float`   | `f32`     |
-/// | `double`  | `f64`     |
-/// | `boolean` | `bool`    |
-/// | `char`    | `char`    |
-/// | `String`  | `&str`    |
+/// | Java type              | Rust type           |
+/// |------------------------|---------------------|
+/// | `byte`                 | `i8`                |
+/// | `short`                | `i16`               |
+/// | `int`                  | `i32`               |
+/// | `long`                 | `i64`               |
+/// | `float`                | `f32`               |
+/// | `double`               | `f64`               |
+/// | `boolean`              | `bool`              |
+/// | `char`                 | `char`              |
+/// | `String`               | `&str`              |
+/// | `Optional<BoxedT>`     | `Option<T>`         |
+/// | `Optional<String>`     | `Option<&str>`      |
 ///
 /// # Options
 ///
