@@ -9,7 +9,8 @@ fn main() {
 		static int run() {
 			return ThreadLocalRandom.current().nextInt(0, 10);
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	println!("Random from Java: {x}");
 
 	// runtime, with int parameter (java_fn!)
@@ -18,7 +19,8 @@ fn main() {
 		static int run(int n) {
 			return n * 2;
 		}
-	}(n).unwrap();
+	}(n)
+	.unwrap();
 	println!("{n} * 2 = {doubled}");
 
 	// runtime, multiple String parameters (java_fn!)
@@ -28,7 +30,8 @@ fn main() {
 		static String run(String greeting, String target) {
 			return greeting + ", " + target + "!";
 		}
-	}(greeting, target).unwrap();
+	}(greeting, target)
+	.unwrap();
 	println!("{msg}");
 
 	// compile-time constant
@@ -41,8 +44,21 @@ fn main() {
 		static String run() {
 			return new HelloWorld().greet();
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	println!("{imports}");
+
+	let imports_jar: String = java! {
+		javac = "-classpath ./demo.jar",
+		java = "-classpath $INLINE_JAVA_CP:./demo.jar",
+		import com.example.demo.*;
+
+		static String run() {
+			return new HelloWorld().greet();
+		}
+	}
+	.unwrap();
+	println!("{imports_jar}");
 
 	let package: String = java! {
 		javac = "-sourcepath .",
@@ -51,7 +67,8 @@ fn main() {
 		static String run() {
 			return new HelloWorld().greet();
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	println!("{package}");
 
 	// explicit javac + java flags (runtime)
@@ -61,7 +78,8 @@ fn main() {
 		static String run() {
 			return new HelloWorld().greet();
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	println!("explicit javac sourcepath (java!): {explicit}");
 
 	// explicit javac + java flags (compile-time)
@@ -72,7 +90,8 @@ fn main() {
 		static int[] run() {
 			return new int[]{10, 20, 30, 40, 50};
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	println!("int[] from Java: {nums:?}");
 
 	// runtime List<String>
@@ -82,7 +101,8 @@ fn main() {
 		static List<String> run() {
 			return Arrays.asList("alpha", "beta", "gamma");
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	println!("List<String> from Java: {words:?}");
 
 	// compile-time int array baked into binary
@@ -107,7 +127,8 @@ fn main() {
 		static Optional<Integer> run() {
 			return Optional.of(42);
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	assert_eq!(opt_int_some, Some(42));
 	println!("Optional<Integer> present: {opt_int_some:?}");
 
@@ -117,7 +138,8 @@ fn main() {
 		static Optional<Integer> run() {
 			return Optional.empty();
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	assert_eq!(opt_int_none, None);
 	println!("Optional<Integer> empty: {opt_int_none:?}");
 
@@ -127,7 +149,8 @@ fn main() {
 		static Optional<String> run() {
 			return Optional.of("world");
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	assert_eq!(opt_str_some.as_deref(), Some("world"));
 	println!("Optional<String> present: {opt_str_some:?}");
 
@@ -137,7 +160,8 @@ fn main() {
 		static Optional<String> run() {
 			return Optional.empty();
 		}
-	}.unwrap();
+	}
+	.unwrap();
 	assert_eq!(opt_str_none, None);
 	println!("Optional<String> empty: {opt_str_none:?}");
 
@@ -147,7 +171,8 @@ fn main() {
 		static Optional<Integer> run(Optional<Integer> val) {
 			return val.map(x -> x * 2);
 		}
-	}(Some(21)).unwrap();
+	}(Some(21))
+	.unwrap();
 	assert_eq!(result_some, Some(42));
 	println!("Optional<Integer> param Some -> {result_some:?}");
 
@@ -157,7 +182,8 @@ fn main() {
 		static Optional<Integer> run(Optional<Integer> val) {
 			return val.map(x -> x * 2);
 		}
-	}(None).unwrap();
+	}(None)
+	.unwrap();
 	assert_eq!(result_none, None);
 	println!("Optional<Integer> param None -> {result_none:?}");
 
@@ -167,7 +193,8 @@ fn main() {
 		static Optional<String> run(Optional<String> val) {
 			return val.map(s -> s.toUpperCase());
 		}
-	}(Some("hello")).unwrap();
+	}(Some("hello"))
+	.unwrap();
 	assert_eq!(result_str_some.as_deref(), Some("HELLO"));
 	println!("Optional<String> param Some -> {result_str_some:?}");
 
@@ -177,7 +204,8 @@ fn main() {
 		static Optional<String> run(Optional<String> val) {
 			return val.map(s -> s.toUpperCase());
 		}
-	}(None).unwrap();
+	}(None)
+	.unwrap();
 	assert_eq!(result_str_none, None);
 	println!("Optional<String> param None -> {result_str_none:?}");
 }
@@ -240,7 +268,7 @@ const OPT_STR_SOME: Option<&str> = ct_java! {
 
 // compile-time Optional<String> — empty
 const OPT_STR_NONE: Option<&str> = ct_java! {
-	import java.util.Optional;
-	static Optional<String> run() {
-		return Optional.empty();
-	}};
+import java.util.Optional;
+static Optional<String> run() {
+	return Optional.empty();
+}};

@@ -4,7 +4,7 @@
 //! # Runtime usage — zero-arg
 //!
 //! [`java!`] compiles and runs Java each time the surrounding Rust code
-//! executes.  It expands to `Result<T, `[`JavaError`]`>`.
+//! executes.  It expands to `Result<T, JavaError>` (see [`JavaError`]).
 //!
 //! ```rust,no_run
 //! use inline_java::java;
