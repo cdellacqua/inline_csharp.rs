@@ -269,3 +269,25 @@ const CT_OPTIONAL_LIST: Option<[i32; 3]> = ct_java! {
 fn ct_java_optional_list() {
 	assert_eq!(CT_OPTIONAL_LIST, Some([7, 8, 9]));
 }
+
+// ── Null return value ─────────────────────────────────────────────────────────
+
+#[test]
+fn java_runtime_null_string() {
+	let result: Result<String, _> = java! {
+		static String run() {
+			return null;
+		}
+	};
+	assert!(result.is_err(), "expected Err for null String return, got {result:?}");
+}
+
+#[test]
+fn java_runtime_null_string_array() {
+	let result: Result<Vec<String>, _> = java! {
+		static String[] run() {
+			return null;
+		}
+	};
+	assert!(result.is_err(), "expected Err for null String[] return, got {result:?}");
+}
