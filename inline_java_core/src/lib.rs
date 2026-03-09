@@ -117,95 +117,31 @@ fn split_args(s: &str) -> Vec<String> {
 	args
 }
 
-/// Shell-expand `opts` and canonicalize any relative path tokens against the
-/// current working directory.
-///
-/// Steps:
-/// 1. Shell-expand environment variables and `~` in `opts`.
-/// 2. Split the result on whitespace.
-/// 3. For each token:
-///    - If it does **not** start with `-`, split it on the platform classpath
-///      separator (`:` on Unix, `;` on Windows) to handle multi-entry values
-///      like `-cp ./lib:../other`.  Resolve each component individually, then
-///      rejoin with the separator.
-///    - If it starts with `-` (a flag such as `-verbose:class`), treat it as a
-///      single unit — flags use `:` as an internal delimiter, not as a path
-///      separator.
-///    - For every (possibly split) component that `Path::new(c).is_relative()`,
-///      replace it with the absolute path from `std::path::absolute(c)`,
-///      falling back to the original on error.
-/// 4. Rejoin tokens with `" "` and return.
-///
-/// This ensures that opts strings like `-cp .` or `-cp ./lib:../other` produce
-/// a cache key that is stable with respect to the actual directory they refer
-/// to, not the syntactic form of the path token.
-fn normalize_opts(opts: &str) -> String {
-	if opts.is_empty() {
-		return String::new();
-	}
-	let expanded = full_with_context_no_errors(
-		opts,
-		|| std::env::var("HOME").ok(),
-		|var| std::env::var(var).ok(),
-	);
-	expanded
-		.split_whitespace()
-		.map(normalize_path_token)
-		.collect::<Vec<_>>()
-		.join(" ")
-}
-
 /// Classpath entry separator: `:` on Unix, `;` on Windows.
 #[cfg(not(windows))]
 const CP_SEP: char = ':';
 #[cfg(windows)]
 const CP_SEP: char = ';';
 
-/// Resolve a single whitespace-delimited token from an opts string.
-///
-/// Tokens that start with `-` are JVM/javac flags (e.g. `-verbose:class`,
-/// `-ea:com.example`) and must not be split on `CP_SEP`.  All other tokens
-/// may be classpath entries containing multiple paths joined by `CP_SEP`
-/// (e.g. `./lib:../other`); each component is resolved individually.
-fn normalize_path_token(tok: &str) -> String {
-	if !tok.starts_with('-') && tok.contains(CP_SEP) {
-		tok.split(CP_SEP)
-			.map(resolve_relative_component)
-			.collect::<Vec<_>>()
-			.join(&CP_SEP.to_string())
-	} else {
-		resolve_relative_component(tok)
-	}
-}
-
-/// If `component` is a relative path, return its absolute form; otherwise
-/// return it unchanged.
-fn resolve_relative_component(component: &str) -> String {
-	if std::path::Path::new(component).is_relative() {
-		std::path::absolute(component).map_or_else(
-			|_| component.to_owned(),
-			|p| p.to_string_lossy().into_owned(),
-		)
-	} else {
-		component.to_owned()
-	}
-}
-
 /// Compute the deterministic temp-dir path used to cache compiled `.class` files.
 ///
 /// The path is `<system_temp>/<class_name>_<hex_hash>/` where `hex_hash` is a
 /// 64-bit hash of:
 /// - `java_class` — the complete Java source text
-/// - normalized `javac_raw` — shell-expanded javac option string with relative
-///   paths resolved to absolute paths
-/// - normalized `java_raw`  — shell-expanded java option string with relative
-///   paths resolved to absolute paths
+/// - `expand_java_args(javac_raw)` — shell-expanded javac args (env vars and
+///   `~` substituted); relative paths in these args are anchored by the next
+///   component below
+/// - `std::env::current_dir()` — the process working directory at call time;
+///   including it ensures that two invocations with the same `javac_raw`
+///   containing relative paths (e.g. `-cp .`) but from different working
+///   directories hash to different cache entries
+/// - `java_raw` — hashed as a raw string (no expansion needed for cache
+///   differentiation; the `java` step always re-runs fresh)
 ///
-/// Because relative paths are resolved to absolute paths before hashing, the
-/// cache key is stable regardless of which syntactic form is used for a path
-/// (e.g. `-cp .` in `/tmp/dir_a` and `-cp /tmp/dir_a` produce the same key),
-/// and two invocations from different working directories produce different
-/// keys only when they actually refer to different directories.
+/// This approach handles both env-var changes and relative paths without any
+/// token-parsing heuristics: shell-expanding `javac_raw` captures env-var
+/// differences, and mixing in the CWD correctly differentiates relative paths
+/// across working directories.
 #[must_use]
 #[allow(clippy::similar_names)]
 pub fn cache_dir(
@@ -219,8 +155,9 @@ pub fn cache_dir(
 
 	let mut h = DefaultHasher::new();
 	java_class.hash(&mut h);
-	normalize_opts(javac_raw).hash(&mut h);
-	normalize_opts(java_raw).hash(&mut h);
+	expand_java_args(javac_raw).hash(&mut h); // shell-expanded; CWD handles relative paths
+	std::env::current_dir().ok().hash(&mut h); // anchors relative paths in javac_raw
+	java_raw.hash(&mut h);
 
 	let hex = format!("{:016x}", h.finish());
 	std::env::temp_dir().join(format!("{class_name}_{hex}"))
@@ -352,144 +289,70 @@ pub fn run_java(
 
 #[cfg(test)]
 mod tests {
-	use super::{CP_SEP, normalize_opts};
+	use super::cache_dir;
 
 	// -----------------------------------------------------------------------
-	// normalize_opts: dot resolves to the current working directory.
+	// cache_dir is idempotent: two calls with identical arguments return the
+	// same path.
 	// -----------------------------------------------------------------------
 	#[test]
-	fn normalize_opts_dot_resolves_to_cwd() {
-		let cwd = std::env::current_dir()
-			.unwrap()
-			.to_string_lossy()
-			.into_owned();
-		assert_eq!(
-			normalize_opts("."),
-			cwd,
-			"normalize_opts(\".\") should equal the current working directory"
+	fn cache_dir_idempotent() {
+		let a = cache_dir("MyClass", "class body", "-cp /usr/lib", "-verbose");
+		let b = cache_dir("MyClass", "class body", "-cp /usr/lib", "-verbose");
+		assert_eq!(a, b, "cache_dir must return the same path for identical args");
+	}
+
+	// -----------------------------------------------------------------------
+	// cache_dir produces different paths for javac_raw strings that expand to
+	// different argument lists.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn cache_dir_differs_for_different_javac_raw() {
+		let a = cache_dir("MyClass", "class body", "-cp /usr/lib/foo", "");
+		let b = cache_dir("MyClass", "class body", "-cp /usr/lib/bar", "");
+		assert_ne!(
+			a, b,
+			"cache_dir must differ when javac_raw expands to different args"
 		);
 	}
 
 	// -----------------------------------------------------------------------
-	// normalize_opts: "-cp ." contains the current working directory.
+	// cache_dir produces different paths when java_class differs.
 	// -----------------------------------------------------------------------
 	#[test]
-	fn normalize_opts_cp_dot_contains_cwd() {
-		let cwd = std::env::current_dir()
-			.unwrap()
-			.to_string_lossy()
-			.into_owned();
-		let result = normalize_opts("-cp .");
-		assert!(
-			result.contains(&cwd),
-			"normalize_opts(\"-cp .\") should contain the cwd; got: {result}"
-		);
+	fn cache_dir_differs_for_different_java_class() {
+		let a = cache_dir("MyClass", "class body A", "", "");
+		let b = cache_dir("MyClass", "class body B", "", "");
+		assert_ne!(a, b, "cache_dir must differ when java_class differs");
 	}
 
 	// -----------------------------------------------------------------------
-	// normalize_opts: absolute path tokens are left unchanged; non-path flag
-	// tokens like "-cp" are relative in the Path sense but that is harmless.
+	// cache_dir produces different paths when java_raw differs.
 	// -----------------------------------------------------------------------
 	#[test]
-	fn normalize_opts_absolute_path_unchanged() {
-		// An absolute path token (/usr/lib) must be passed through as-is.
-		let result = normalize_opts("-cp /usr/lib");
-		assert!(
-			result.contains("/usr/lib"),
-			"the absolute path token /usr/lib must appear unchanged; got: {result}"
-		);
-		assert!(
-			result.ends_with("/usr/lib"),
-			"the absolute path token must not be modified; got: {result}"
-		);
+	fn cache_dir_differs_for_different_java_raw() {
+		let a = cache_dir("MyClass", "class body", "", "-Xmx256m");
+		let b = cache_dir("MyClass", "class body", "", "-Xmx512m");
+		assert_ne!(a, b, "cache_dir must differ when java_raw differs");
 	}
 
 	// -----------------------------------------------------------------------
-	// normalize_opts: a relative hidden-file token is resolved to an absolute
-	// path (it is still relative to CWD, regardless of the leading dot).
+	// cache_dir result is inside the system temp directory and uses the
+	// class_name as a prefix.
 	// -----------------------------------------------------------------------
 	#[test]
-	fn normalize_opts_hidden_relative_resolved() {
-		let cwd = std::env::current_dir()
-			.unwrap()
-			.to_string_lossy()
-			.into_owned();
-		let result = normalize_opts("-cp .hidden");
+	fn cache_dir_path_structure() {
+		let result = cache_dir("InlineJava_abc123", "src", "", "");
+		let tmp = std::env::temp_dir();
 		assert!(
-			result.contains(&cwd),
-			"normalize_opts(\"-cp .hidden\") should resolve .hidden against cwd; got: {result}"
+			result.starts_with(&tmp),
+			"cache_dir result must be under the system temp dir; got: {}",
+			result.display()
 		);
-	}
-
-	// -----------------------------------------------------------------------
-	// normalize_opts: empty string returns empty string.
-	// -----------------------------------------------------------------------
-	#[test]
-	fn normalize_opts_empty() {
-		assert_eq!(normalize_opts(""), "");
-	}
-
-	// -----------------------------------------------------------------------
-	// normalize_opts: multi-entry classpath (separator-joined relative paths)
-	// are each resolved against cwd independently.
-	// -----------------------------------------------------------------------
-	#[test]
-	fn normalize_opts_cp_multi_entry_resolved() {
-		let cwd = std::env::current_dir()
-			.unwrap()
-			.to_string_lossy()
-			.into_owned();
-		// e.g. "-cp ./lib:../other" — both relative components must be resolved.
-		let joined = format!("-cp .{CP_SEP}./lib");
-		let result = normalize_opts(&joined);
-		// The resolved value should contain the cwd.
+		let file_name = result.file_name().unwrap().to_string_lossy();
 		assert!(
-			result.contains(&cwd),
-			"multi-entry classpath should have relative entries resolved; got: {result}"
-		);
-		// The separator must still be present (two entries → one separator).
-		let sep_count = result.chars().filter(|&c| c == CP_SEP).count();
-		assert_eq!(
-			sep_count, 1,
-			"separator should be preserved between entries; got: {result}"
-		);
-	}
-
-	// -----------------------------------------------------------------------
-	// normalize_opts: JVM flags containing ':' (e.g. -verbose:class) are
-	// never split on the classpath separator.
-	// -----------------------------------------------------------------------
-	#[test]
-	fn normalize_opts_flag_with_colon_not_split() {
-		let result = normalize_opts("-verbose:class");
-		// The flag must be kept intact; it must not be resolved as a path pair.
-		assert!(
-			result.contains("-verbose:class") || result.contains("-verbose"),
-			"flag token must not be split on ':'; got: {result}"
-		);
-		// Specifically, there should be no path separator splitting the value:
-		// resolved components of a split would contain the cwd, which is wrong.
-		// We just verify the colon is still present.
-		assert!(
-			result.contains(':'),
-			"-verbose:class must retain its colon; got: {result}"
-		);
-	}
-
-	// -----------------------------------------------------------------------
-	// normalize_opts: a single-entry classpath value that is a relative path
-	// is still resolved (no separator involved).
-	// -----------------------------------------------------------------------
-	#[test]
-	fn normalize_opts_single_relative_cp_resolved() {
-		let cwd = std::env::current_dir()
-			.unwrap()
-			.to_string_lossy()
-			.into_owned();
-		let result = normalize_opts("-cp ./mylib");
-		assert!(
-			result.contains(&cwd),
-			"single relative cp entry should be resolved; got: {result}"
+			file_name.starts_with("InlineJava_abc123_"),
+			"cache_dir result filename must start with the class name; got: {file_name}"
 		);
 	}
 }

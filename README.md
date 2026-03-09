@@ -212,7 +212,3 @@ fn parity_with_java() {
 | `inline_java_macros` | Proc-macro implementation (`java!`, `java_fn!`, `ct_java!`) |
 | `inline_java_core`   | Runtime helpers (`run_java`, `JavaError`)                   |
 | `inline_java_demo`   | Demo binary                                                 |
-
-
-TODO: should the hash only depend on javac absolute path? ALSO: should javac be the only one with resolved paths??
-TODO: null handling?
