@@ -1530,8 +1530,6 @@ fn make_runner_fn(
 /// - `javac = "<args>"` — extra arguments for `javac` (shell-quoted).
 /// - `java  = "<args>"` — extra arguments for `java` (shell-quoted).
 ///
-/// `$INLINE_JAVA_CP` in either option expands to the class-output directory.
-///
 /// # Examples
 ///
 /// ```text

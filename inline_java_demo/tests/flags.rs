@@ -37,13 +37,13 @@ fn java_runtime_multiple_java_args() {
 	assert_eq!(val, Ok("foo:bar".to_string()));
 }
 
-// classpath JAR via $INLINE_JAVA_CP
+// classpath JAR — tmp_dir is appended automatically, no need to include it manually
 
 #[test]
 fn java_runtime_javac_classpath_jar() {
 	let val: Result<String, _> = java! {
 		javac = "-cp \"demo.jar\"",
-		java = "-cp $INLINE_JAVA_CP:demo.jar",
+		java = "-cp demo.jar",
 		import com.example.demo.*;
 		static String run() {
 			return new HelloWorld().greet();
@@ -56,7 +56,7 @@ fn java_runtime_javac_classpath_jar() {
 fn java_runtime_javac_classpath_jar_long_arg_name() {
 	let val: Result<String, _> = java! {
 		javac = "-classpath \"demo.jar\"",
-		java = "-classpath $INLINE_JAVA_CP:demo.jar",
+		java = "-classpath demo.jar",
 		import com.example.demo.*;
 		static String run() {
 			return new HelloWorld().greet();

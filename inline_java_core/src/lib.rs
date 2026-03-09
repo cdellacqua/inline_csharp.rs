@@ -43,8 +43,8 @@ pub enum JavaError {
 	InvalidChar,
 }
 
-/// Shell-expand `raw` with `INLINE_JAVA_CP` resolved to `inline_java_cp`,
-/// then split into individual arguments (respecting quotes).
+/// Shell-expand `raw` (expanding env vars and `~`), then split into individual
+/// arguments (respecting quotes).
 /// Returns an empty vec if `raw` is empty.
 ///
 /// # Examples
@@ -52,27 +52,43 @@ pub enum JavaError {
 /// ```rust
 /// use inline_java_core::expand_java_args;
 ///
-/// let args = expand_java_args("-verbose:class -cp $INLINE_JAVA_CP", "/tmp/MyClass");
-/// assert_eq!(args, vec!["-verbose:class", "-cp", "/tmp/MyClass"]);
+/// let args = expand_java_args("-verbose:class -Xmx512m");
+/// assert_eq!(args, vec!["-verbose:class", "-Xmx512m"]);
 ///
-/// let empty = expand_java_args("", "/tmp/MyClass");
+/// let empty = expand_java_args("");
 /// assert!(empty.is_empty());
 /// ```
 #[must_use]
-pub fn expand_java_args(raw: &str, inline_java_cp: &str) -> Vec<String> {
+pub fn expand_java_args(raw: &str) -> Vec<String> {
 	if raw.is_empty() {
 		return Vec::new();
 	}
-	let cp = inline_java_cp.to_owned();
 	let expanded = full_with_context_no_errors(
 		raw,
 		|| std::env::var("HOME").ok(),
-		move |var| match var {
-			"INLINE_JAVA_CP" => Some(cp.clone()),
-			other => std::env::var(other).ok(),
-		},
+		|var| std::env::var(var).ok(),
 	);
 	split_args(&expanded)
+}
+
+/// Inject `extra_cp` into `args` by appending it to any existing `-cp`,
+/// `-classpath`, or `--class-path` value, or by appending `-cp extra_cp`
+/// if no classpath flag is present.
+fn inject_classpath(args: &mut Vec<String>, extra_cp: &str) {
+	const SPACE_FLAGS: &[&str] = &["-cp", "-classpath", "--class-path"];
+	for i in 0..args.len() {
+		if SPACE_FLAGS.contains(&args[i].as_str()) && i + 1 < args.len() {
+			args[i + 1].push(CP_SEP);
+			args[i + 1].push_str(extra_cp);
+			return;
+		}
+		if let Some(val) = args[i].strip_prefix("--class-path=") {
+			args[i] = format!("--class-path={val}{CP_SEP}{extra_cp}");
+			return;
+		}
+	}
+	args.push("-cp".to_owned());
+	args.push(extra_cp.to_owned());
 }
 
 /// Split a shell-style argument string into individual arguments, respecting
@@ -166,8 +182,10 @@ fn normalize_path_token(tok: &str) -> String {
 /// return it unchanged.
 fn resolve_relative_component(component: &str) -> String {
 	if std::path::Path::new(component).is_relative() {
-		std::path::absolute(component)
-			.map_or_else(|_| component.to_owned(), |p| p.to_string_lossy().into_owned())
+		std::path::absolute(component).map_or_else(
+			|_| component.to_owned(),
+			|p| p.to_string_lossy().into_owned(),
+		)
 	} else {
 		component.to_owned()
 	}
@@ -257,9 +275,9 @@ pub fn run_java(
 	use std::process::Stdio;
 
 	let tmp_dir = cache_dir(class_name, java_class, javac_raw, java_raw);
-	let cp = tmp_dir.to_string_lossy().into_owned();
-	let javac_extra = expand_java_args(javac_raw, &cp);
-	let java_extra = expand_java_args(java_raw, &cp);
+	let javac_extra = expand_java_args(javac_raw);
+	let mut java_extra = expand_java_args(java_raw);
+	inject_classpath(&mut java_extra, &tmp_dir.to_string_lossy());
 
 	if !tmp_dir.join(".done").exists() {
 		std::fs::create_dir_all(&tmp_dir).map_err(|e| JavaError::Io(e.to_string()))?;
@@ -293,13 +311,11 @@ pub fn run_java(
 				));
 			}
 
-			std::fs::write(tmp_dir.join(".done"), b"")
-				.map_err(|e| JavaError::Io(e.to_string()))?;
+			std::fs::write(tmp_dir.join(".done"), b"").map_err(|e| JavaError::Io(e.to_string()))?;
 		}
 	}
 
 	let mut cmd = std::process::Command::new("java");
-	cmd.arg("-cp").arg(&tmp_dir);
 	for arg in &java_extra {
 		cmd.arg(arg);
 	}
@@ -336,7 +352,7 @@ pub fn run_java(
 
 #[cfg(test)]
 mod tests {
-	use super::{normalize_opts, CP_SEP};
+	use super::{CP_SEP, normalize_opts};
 
 	// -----------------------------------------------------------------------
 	// normalize_opts: dot resolves to the current working directory.

@@ -50,7 +50,7 @@ fn main() {
 
 	let imports_jar: String = java! {
 		javac = "-classpath ./demo.jar",
-		java = "-classpath $INLINE_JAVA_CP:./demo.jar",
+		java = "-classpath ./demo.jar",
 		import com.example.demo.*;
 
 		static String run() {

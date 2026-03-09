@@ -132,14 +132,12 @@ commas:
 - `javac = "<args>"` — extra arguments for `javac` (shell-quoted).
 - `java  = "<args>"` — extra arguments for `java` (shell-quoted).
 
-If you need to set the classpath option, make sure to include `$INLINE_JAVA_CP`, this virtual environment variable will expand to the
-class-output directory for the auto-generated class.
-
 ```rust
 use inline_java::java;
 
 let result: String = java! {
-    javac = "-sourcepath .",
+    javac = "-cp ./my.jar",
+    java  = "-cp ./my.jar",
     import com.example.MyClass;
     static String run() {
         return new MyClass().greet();
@@ -214,3 +212,7 @@ fn parity_with_java() {
 | `inline_java_macros` | Proc-macro implementation (`java!`, `java_fn!`, `ct_java!`) |
 | `inline_java_core`   | Runtime helpers (`run_java`, `JavaError`)                   |
 | `inline_java_demo`   | Demo binary                                                 |
+
+
+TODO: should the hash only depend on javac absolute path? ALSO: should javac be the only one with resolved paths??
+TODO: null handling?
