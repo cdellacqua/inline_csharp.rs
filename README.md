@@ -61,26 +61,6 @@ const PI: f64 = ct_java! {
 | `T[]`           | `Vec<T>`    |
 | `List<BoxedT>`  | `Vec<T>`    |
 
-## Variable injection
-
-Inject Rust variables into Java using `'varname` syntax.  Each `'varname`
-becomes the Java `String _RUST_varname` static field, passed via `args[]`.
-
-```rust
-use inline_java::java;
-
-let greeting = "Hello";
-let target = "World";
-let msg: String = java! {
-    static String run() {
-        return 'greeting + ", " + 'target + "!";
-    }
-}.unwrap();
-```
-
-Variable injection is only supported in `java!`; `ct_java!` has no runtime
-variables to capture.
-
 ## Options
 
 Optional `key = "value"` pairs may appear before the Java body, separated by

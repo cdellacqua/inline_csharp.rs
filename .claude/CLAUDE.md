@@ -19,10 +19,9 @@
 - **Optional flags**: `javac = "..."` and `java = "..."` key-value pairs before the Java body, comma-separated; values are split on whitespace into individual args
 - **Temp dir**: deterministic per class (`/tmp/<ClassName>/`), named by hash of imports+outer+body+javac_opts+java_opts (opts included so different compilation strategies get separate dirs)
 - **Locking**: `fd-lock` file lock on `$tmpdir/.lock` (cross-process + cross-thread); `.done` sentinel marks successful compilation; optimistic pre-check before acquiring lock. Lives in `inline_java_core::run_java`.
-- **compile_run_java_now** (in macros): thin wrapper around `inline_java_core::run_java` mapping `JavaError → String` for `compile_error!` diagnostics; passes `&[]` for var_values since ct_java! has no var injection
+- **compile_run_java_now** (in macros): thin wrapper around `inline_java_core::run_java` mapping `JavaError → String` for `compile_error!` diagnostics
 - **Package handling**: if user writes `package com.example;`, class runs as `com.example.InlineJava_xxx`
 - **parse_package_name**: uses `find("package ")` + `find(';')` string search (NOT split_whitespace — proc_macro2 renders `com.example.demo;` without spaces around dots)
-- **Var injection**: `'varname` syntax in Java body becomes `_RUST_varname` static field, passed via args[]
 - **extract_opts / try_parse_opt**: parse `Ident("javac"|"java") Punct("=") Literal(string)` triples from the front of the token stream using a separate `&[TokenTree]`-borrowing helper (avoids borrow-then-drain conflict)
 
 ## Pitfalls encountered
