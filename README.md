@@ -23,7 +23,8 @@ to `Result<T, inline_java::JavaError>`.
 ```rust
 use inline_java::java;
 
-let x: i32 = java! {
+// No type annotation needed — the macro infers `i32` from `static int run()`
+let x = java! {
     static int run() {
         return 42;
     }
@@ -39,8 +40,8 @@ serialised by Rust and piped to the Java process over stdin.
 ```rust
 use inline_java::java_fn;
 
-// Single parameter
-let doubled: i32 = java_fn! {
+// Single parameter — return type inferred from `static int run()`
+let doubled = java_fn! {
     static int run(int n) {
         return n * 2;
     }

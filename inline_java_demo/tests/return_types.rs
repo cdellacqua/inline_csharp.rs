@@ -97,7 +97,8 @@ fn java_runtime_list_string() {
 
 #[test]
 fn java_runtime_abstract_class_override() {
-	let sound: String = java! {
+	// No annotation needed — `static String run()` already tells the macro to produce String
+	let sound = java! {
 		abstract class Animal {
 			abstract String sound();
 		}
@@ -284,7 +285,8 @@ fn java_runtime_null_string() {
 
 #[test]
 fn java_runtime_null_string_array() {
-	let result: Result<Vec<String>, _> = java! {
+	// No annotation needed — type fully inferred from `static String[] run()`
+	let result = java! {
 		static String[] run() {
 			return null;
 		}
