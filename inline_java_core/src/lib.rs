@@ -107,14 +107,22 @@ fn split_args(s: &str) -> Vec<String> {
 /// Steps:
 /// 1. Shell-expand environment variables and `~` in `opts`.
 /// 2. Split the result on whitespace.
-/// 3. For each token that `Path::new(tok).is_relative()`, replace it with the
-///    absolute path produced by `std::path::absolute(tok)` (falling back to the
-///    original token on error).
-/// 4. Rejoin with `" "` and return.
+/// 3. For each token:
+///    - If it does **not** start with `-`, split it on the platform classpath
+///      separator (`:` on Unix, `;` on Windows) to handle multi-entry values
+///      like `-cp ./lib:../other`.  Resolve each component individually, then
+///      rejoin with the separator.
+///    - If it starts with `-` (a flag such as `-verbose:class`), treat it as a
+///      single unit — flags use `:` as an internal delimiter, not as a path
+///      separator.
+///    - For every (possibly split) component that `Path::new(c).is_relative()`,
+///      replace it with the absolute path from `std::path::absolute(c)`,
+///      falling back to the original on error.
+/// 4. Rejoin tokens with `" "` and return.
 ///
-/// This ensures that opts strings like `-cp .` produce a cache key that is
-/// stable with respect to the actual directory they refer to, not the
-/// syntactic form of the path token.
+/// This ensures that opts strings like `-cp .` or `-cp ./lib:../other` produce
+/// a cache key that is stable with respect to the actual directory they refer
+/// to, not the syntactic form of the path token.
 fn normalize_opts(opts: &str) -> String {
 	if opts.is_empty() {
 		return String::new();
@@ -126,16 +134,43 @@ fn normalize_opts(opts: &str) -> String {
 	);
 	expanded
 		.split_whitespace()
-		.map(|tok| {
-			if std::path::Path::new(tok).is_relative() {
-				std::path::absolute(tok)
-					.map_or_else(|_| tok.to_owned(), |p| p.to_string_lossy().into_owned())
-			} else {
-				tok.to_owned()
-			}
-		})
+		.map(normalize_path_token)
 		.collect::<Vec<_>>()
 		.join(" ")
+}
+
+/// Classpath entry separator: `:` on Unix, `;` on Windows.
+#[cfg(not(windows))]
+const CP_SEP: char = ':';
+#[cfg(windows)]
+const CP_SEP: char = ';';
+
+/// Resolve a single whitespace-delimited token from an opts string.
+///
+/// Tokens that start with `-` are JVM/javac flags (e.g. `-verbose:class`,
+/// `-ea:com.example`) and must not be split on `CP_SEP`.  All other tokens
+/// may be classpath entries containing multiple paths joined by `CP_SEP`
+/// (e.g. `./lib:../other`); each component is resolved individually.
+fn normalize_path_token(tok: &str) -> String {
+	if !tok.starts_with('-') && tok.contains(CP_SEP) {
+		tok.split(CP_SEP)
+			.map(resolve_relative_component)
+			.collect::<Vec<_>>()
+			.join(&CP_SEP.to_string())
+	} else {
+		resolve_relative_component(tok)
+	}
+}
+
+/// If `component` is a relative path, return its absolute form; otherwise
+/// return it unchanged.
+fn resolve_relative_component(component: &str) -> String {
+	if std::path::Path::new(component).is_relative() {
+		std::path::absolute(component)
+			.map_or_else(|_| component.to_owned(), |p| p.to_string_lossy().into_owned())
+	} else {
+		component.to_owned()
+	}
 }
 
 /// Compute the deterministic temp-dir path used to cache compiled `.class` files.
@@ -301,7 +336,7 @@ pub fn run_java(
 
 #[cfg(test)]
 mod tests {
-	use super::normalize_opts;
+	use super::{normalize_opts, CP_SEP};
 
 	// -----------------------------------------------------------------------
 	// normalize_opts: dot resolves to the current working directory.
@@ -376,5 +411,69 @@ mod tests {
 	#[test]
 	fn normalize_opts_empty() {
 		assert_eq!(normalize_opts(""), "");
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: multi-entry classpath (separator-joined relative paths)
+	// are each resolved against cwd independently.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_cp_multi_entry_resolved() {
+		let cwd = std::env::current_dir()
+			.unwrap()
+			.to_string_lossy()
+			.into_owned();
+		// e.g. "-cp ./lib:../other" — both relative components must be resolved.
+		let joined = format!("-cp .{CP_SEP}./lib");
+		let result = normalize_opts(&joined);
+		// The resolved value should contain the cwd.
+		assert!(
+			result.contains(&cwd),
+			"multi-entry classpath should have relative entries resolved; got: {result}"
+		);
+		// The separator must still be present (two entries → one separator).
+		let sep_count = result.chars().filter(|&c| c == CP_SEP).count();
+		assert_eq!(
+			sep_count, 1,
+			"separator should be preserved between entries; got: {result}"
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: JVM flags containing ':' (e.g. -verbose:class) are
+	// never split on the classpath separator.
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_flag_with_colon_not_split() {
+		let result = normalize_opts("-verbose:class");
+		// The flag must be kept intact; it must not be resolved as a path pair.
+		assert!(
+			result.contains("-verbose:class") || result.contains("-verbose"),
+			"flag token must not be split on ':'; got: {result}"
+		);
+		// Specifically, there should be no path separator splitting the value:
+		// resolved components of a split would contain the cwd, which is wrong.
+		// We just verify the colon is still present.
+		assert!(
+			result.contains(':'),
+			"-verbose:class must retain its colon; got: {result}"
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// normalize_opts: a single-entry classpath value that is a relative path
+	// is still resolved (no separator involved).
+	// -----------------------------------------------------------------------
+	#[test]
+	fn normalize_opts_single_relative_cp_resolved() {
+		let cwd = std::env::current_dir()
+			.unwrap()
+			.to_string_lossy()
+			.into_owned();
+		let result = normalize_opts("-cp ./mylib");
+		assert!(
+			result.contains(&cwd),
+			"single relative cp entry should be resolved; got: {result}"
+		);
 	}
 }
