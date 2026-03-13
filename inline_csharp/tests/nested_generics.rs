@@ -115,11 +115,7 @@ fn csharp_runtime_nullable_list_of_nullable_int_array_present() {
 	.unwrap();
 	assert_eq!(
 		v,
-		Some(vec![
-			Some(vec![10i32, 20]),
-			None,
-			Some(vec![30i32]),
-		])
+		Some(vec![Some(vec![10i32, 20]), None, Some(vec![30i32]),])
 	);
 }
 

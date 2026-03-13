@@ -248,11 +248,7 @@ fn csharp_fn_arg_nullable_list_of_nullable_int_array_present() {
 	.unwrap();
 	assert_eq!(
 		v,
-		Some(vec![
-			Some(vec![10i32, 20]),
-			None,
-			Some(vec![30i32]),
-		])
+		Some(vec![Some(vec![10i32, 20]), None, Some(vec![30i32]),])
 	);
 }
 

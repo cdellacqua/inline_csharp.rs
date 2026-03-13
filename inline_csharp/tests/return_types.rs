@@ -1,4 +1,4 @@
-use inline_csharp::{ct_csharp, csharp};
+use inline_csharp::{csharp, ct_csharp};
 
 // ── Primitive arrays ──────────────────────────────────────────────────────────
 
@@ -211,10 +211,7 @@ fn csharp_runtime_nullable_list_string_present() {
 		}
 	}
 	.unwrap();
-	assert_eq!(
-		v,
-		Some(vec!["hello".to_string(), "world".to_string()])
-	);
+	assert_eq!(v, Some(vec!["hello".to_string(), "world".to_string()]));
 }
 
 // List<string>? absent — Java Optional<List<String>> absent

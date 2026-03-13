@@ -117,7 +117,10 @@ impl CsharpType {
 			Self::Str => "string".to_string(),
 			Self::Array(inner) => format!("{}[]", inner.csharp_type_name()),
 			Self::List(inner) => {
-				format!("System.Collections.Generic.List<{}>", inner.csharp_type_name())
+				format!(
+					"System.Collections.Generic.List<{}>",
+					inner.csharp_type_name()
+				)
 			}
 			Self::Nullable(inner) => format!("{}?", inner.csharp_type_name()),
 		}
@@ -130,17 +133,13 @@ impl CsharpType {
 		matches!(
 			self,
 			Self::Sbyte
-				| Self::Byte
-				| Self::Short
+				| Self::Byte | Self::Short
 				| Self::Ushort
-				| Self::Int
-				| Self::Uint
-				| Self::Long
-				| Self::Ulong
+				| Self::Int | Self::Uint
+				| Self::Long | Self::Ulong
 				| Self::Float
 				| Self::Double
-				| Self::Bool
-				| Self::Char
+				| Self::Bool | Self::Char
 		)
 	}
 
@@ -199,7 +198,7 @@ impl CsharpType {
 			Self::Sbyte => quote! {
 				_stdin_bytes.extend_from_slice(&(#param_ident as i8).to_le_bytes());
 			},
-			Self::Byte => quote! {
+			Self::Byte | Self::Bool => quote! {
 				_stdin_bytes.push(#param_ident as u8);
 			},
 			Self::Short => quote! {
@@ -225,9 +224,6 @@ impl CsharpType {
 			},
 			Self::Double => quote! {
 				_stdin_bytes.extend_from_slice(&(#param_ident as f64).to_bits().to_le_bytes());
-			},
-			Self::Bool => quote! {
-				_stdin_bytes.push(#param_ident as u8);
 			},
 			Self::Char => quote! {
 				{
@@ -444,7 +440,12 @@ fn csharp_br_read(ty: &CsharpType, name: &str, depth: usize) -> String {
 			let mut base = inner_cs_type.as_str();
 			let mut trailing = "";
 			if base.ends_with("[]") {
-				let end = base.len() - base.chars().rev().take_while(|&c| c == '[' || c == ']').count();
+				let end = base.len()
+					- base
+						.chars()
+						.rev()
+						.take_while(|&c| c == '[' || c == ']')
+						.count();
 				trailing = &base[end..];
 				base = &base[..end];
 			}
@@ -653,6 +654,7 @@ fn csharp_ser_element(ty: &CsharpType, var: &str, bw_name: &str, depth: usize) -
 
 /// Generates a Rust expression block that reads one value of type `ty` from `_raw`
 /// using the shared mutable cursor `_cur`. All levels share the same `_cur` and `_raw`.
+#[allow(clippy::too_many_lines)]
 fn rust_read_element(ty: &CsharpType, depth: usize) -> proc_macro2::TokenStream {
 	match ty {
 		CsharpType::Sbyte => quote! {{
@@ -769,11 +771,8 @@ fn rust_read_element(ty: &CsharpType, depth: usize) -> proc_macro2::TokenStream 
 
 /// Deserialise one scalar element from `bytes[offset..]` and return a
 /// `(rust_literal_string, bytes_consumed)` pair for `ct_csharp_tokens`.
-fn scalar_ct_lit(
-	ty: &CsharpType,
-	bytes: &[u8],
-	offset: usize,
-) -> Result<(String, usize), String> {
+#[allow(clippy::too_many_lines)]
+fn scalar_ct_lit(ty: &CsharpType, bytes: &[u8], offset: usize) -> Result<(String, usize), String> {
 	let b = &bytes[offset..];
 	match ty {
 		CsharpType::Sbyte => {
@@ -842,7 +841,14 @@ fn scalar_ct_lit(
 			if b.is_empty() {
 				return Err("ct_csharp: truncated bool element".to_string());
 			}
-			Ok((if b[0] != 0 { "true".to_string() } else { "false".to_string() }, 1))
+			Ok((
+				if b[0] != 0 {
+					"true".to_string()
+				} else {
+					"false".to_string()
+				},
+				1,
+			))
 		}
 		CsharpType::Char => {
 			if b.len() < 2 {
@@ -951,9 +957,7 @@ struct ParsedCsharp {
 /// - Nullable suffix: `T?` wraps the whole type in `Nullable`
 fn parse_csharp_type(tts: &[TokenTree]) -> Result<(CsharpType, usize), String> {
 	if tts.is_empty() {
-		return Err(
-			"inline_csharp: unexpected end of tokens while parsing C# type".to_string(),
-		);
+		return Err("inline_csharp: unexpected end of tokens while parsing C# type".to_string());
 	}
 
 	match tts.first() {
@@ -966,8 +970,7 @@ fn parse_csharp_type(tts: &[TokenTree]) -> Result<(CsharpType, usize), String> {
 				}
 				let (inner_ty, inner_consumed) = parse_csharp_type_inner(&tts[2..])?;
 				let close_idx = 2 + inner_consumed;
-				if !matches!(tts.get(close_idx), Some(TokenTree::Punct(p)) if p.as_char() == '>')
-				{
+				if !matches!(tts.get(close_idx), Some(TokenTree::Punct(p)) if p.as_char() == '>') {
 					return Err("inline_csharp: expected `>` to close `List<...>`".to_string());
 				}
 				(CsharpType::List(Box::new(inner_ty)), close_idx + 1)
@@ -994,8 +997,7 @@ fn parse_csharp_type(tts: &[TokenTree]) -> Result<(CsharpType, usize), String> {
 			}
 
 			// Consume optional `?` suffix — wraps the outermost type in Nullable.
-			if matches!(tts.get(total_consumed), Some(TokenTree::Punct(p)) if p.as_char() == '?')
-			{
+			if matches!(tts.get(total_consumed), Some(TokenTree::Punct(p)) if p.as_char() == '?') {
 				ty = CsharpType::Nullable(Box::new(ty));
 				total_consumed += 1;
 			}
@@ -1023,8 +1025,7 @@ fn parse_csharp_type_inner(tts: &[TokenTree]) -> Result<(CsharpType, usize), Str
 				}
 				let (inner_ty, inner_consumed) = parse_csharp_type_inner(&tts[2..])?;
 				let close_idx = 2 + inner_consumed;
-				if !matches!(tts.get(close_idx), Some(TokenTree::Punct(p)) if p.as_char() == '>')
-				{
+				if !matches!(tts.get(close_idx), Some(TokenTree::Punct(p)) if p.as_char() == '>') {
 					return Err("inline_csharp: expected `>` to close `List<...>`".to_string());
 				}
 				(CsharpType::List(Box::new(inner_ty)), close_idx + 1)
@@ -1051,8 +1052,7 @@ fn parse_csharp_type_inner(tts: &[TokenTree]) -> Result<(CsharpType, usize), Str
 			}
 
 			// Consume optional `?` suffix.
-			if matches!(tts.get(total_consumed), Some(TokenTree::Punct(p)) if p.as_char() == '?')
-			{
+			if matches!(tts.get(total_consumed), Some(TokenTree::Punct(p)) if p.as_char() == '?') {
 				ty = CsharpType::Nullable(Box::new(ty));
 				total_consumed += 1;
 			}
@@ -1188,8 +1188,7 @@ fn parse_csharp_source(stream: proc_macro2::TokenStream) -> Result<ParsedCsharp,
 		match &tts[i] {
 			TokenTree::Ident(id) if id == "using" => {
 				// Check for `using static` or `using var` — not a namespace using
-				let is_namespace_using =
-					!matches!(tts.get(i + 1), Some(TokenTree::Ident(next))
+				let is_namespace_using = !matches!(tts.get(i + 1), Some(TokenTree::Ident(next))
 						if next == "static" || next == "var");
 				if is_namespace_using {
 					first_using_idx.get_or_insert(i);
@@ -1222,8 +1221,7 @@ fn parse_csharp_source(stream: proc_macro2::TokenStream) -> Result<ParsedCsharp,
 	let body_start = first_body_idx.unwrap_or(tts.len());
 
 	// Parse return type and Run index from body tokens.
-	let (csharp_type, run_rel_idx, run_rel_run_idx) =
-		parse_run_return_type(&tts[body_start..])?;
+	let (csharp_type, run_rel_idx, run_rel_run_idx) = parse_run_return_type(&tts[body_start..])?;
 	let run_abs_idx = body_start + run_rel_idx;
 	let run_token_abs_idx = body_start + run_rel_run_idx;
 
@@ -1297,20 +1295,11 @@ fn parse_csharp_source(stream: proc_macro2::TokenStream) -> Result<ParsedCsharp,
 
 // ── Option extraction ─────────────────────────────────────────────────────────
 
+#[derive(Default)]
 struct DotnetOpts {
 	build_args: String,
 	run_args: String,
 	references: Vec<String>,
-}
-
-impl Default for DotnetOpts {
-	fn default() -> Self {
-		Self {
-			build_args: String::new(),
-			run_args: String::new(),
-			references: Vec::new(),
-		}
-	}
 }
 
 /// Consume leading `build = "…"` / `run = "…"` / `reference = "…"` option pairs
@@ -1451,8 +1440,14 @@ fn make_runner_fn(
 
 	let class_name = make_class_name(prefix, &usings, &outer, &body, &opts);
 	let main_method = csharp_type.csharp_main(&params);
-	let csharp_source =
-		format_csharp_source(&usings, &namespace_decl, &class_name, &outer, &body, &main_method);
+	let csharp_source = format_csharp_source(
+		&usings,
+		&namespace_decl,
+		&class_name,
+		&outer,
+		&body,
+		&main_method,
+	);
 
 	let build_raw = opts.build_args;
 	let run_raw = opts.run_args;
@@ -1505,9 +1500,7 @@ fn make_runner_fn(
 
 // ── ct_csharp_impl ────────────────────────────────────────────────────────────
 
-fn ct_csharp_impl(
-	input: proc_macro2::TokenStream,
-) -> Result<proc_macro2::TokenStream, String> {
+fn ct_csharp_impl(input: proc_macro2::TokenStream) -> Result<proc_macro2::TokenStream, String> {
 	let (opts, input) = extract_opts(input);
 
 	let ParsedCsharp {
@@ -1521,8 +1514,14 @@ fn ct_csharp_impl(
 
 	let class_name = make_class_name("CtCsharp", &usings, &outer, &body, &opts);
 	let main_method = csharp_type.csharp_main(&[]);
-	let csharp_source =
-		format_csharp_source(&usings, &namespace_decl, &class_name, &outer, &body, &main_method);
+	let csharp_source = format_csharp_source(
+		&usings,
+		&namespace_decl,
+		&class_name,
+		&outer,
+		&body,
+		&main_method,
+	);
 
 	let refs: Vec<&str> = opts.references.iter().map(String::as_str).collect();
 	let bytes = compile_run_csharp_now(

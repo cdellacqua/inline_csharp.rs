@@ -1,4 +1,4 @@
-use inline_csharp::{ct_csharp, csharp, csharp_fn};
+use inline_csharp::{csharp, csharp_fn, ct_csharp};
 use std::process::Command;
 
 fn build_demo_dll(out_dir: &str) {

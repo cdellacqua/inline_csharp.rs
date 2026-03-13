@@ -1,4 +1,4 @@
-# inline_csharp
+# `inline_csharp`
 
 Embed C# directly in Rust — evaluated at program runtime (`csharp!`, `csharp_fn!`) or at
 compile time (`ct_csharp!`).

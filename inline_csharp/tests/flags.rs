@@ -1,4 +1,4 @@
-use inline_csharp::{ct_csharp, csharp};
+use inline_csharp::{csharp, ct_csharp};
 
 /// Build a tiny C# class library DLL at `dll_path` (skipped if already present).
 ///
@@ -46,7 +46,13 @@ fn build_demo_dll(dll_path: &str) {
 	.unwrap();
 
 	let status = std::process::Command::new("dotnet")
-		.args(["build", src_dir.to_str().unwrap(), "--nologo", "-v", "quiet"])
+		.args([
+			"build",
+			src_dir.to_str().unwrap(),
+			"--nologo",
+			"-v",
+			"quiet",
+		])
 		.status()
 		.expect("dotnet build failed");
 	assert!(status.success(), "build_demo_dll: dotnet build failed");
@@ -59,7 +65,11 @@ fn build_demo_dll(dll_path: &str) {
 		.join(&tfm)
 		.join("Greeter.dll");
 	std::fs::copy(&built_dll, dll).unwrap_or_else(|e| {
-		panic!("failed to copy {built_dll:?} → {dll:?}: {e}");
+		panic!(
+			"failed to copy {} → {}: {e}",
+			built_dll.display(),
+			dll.display()
+		);
 	});
 }
 

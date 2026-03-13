@@ -12,6 +12,7 @@
 //! - [`cache_dir`] — compute the deterministic temp-dir path for a C# class.
 
 use shellexpand::full_with_context_no_errors;
+use std::fmt::Write;
 
 /// Detect the installed .NET target framework moniker (e.g. `"net8.0"`) by
 /// running `dotnet --version` and extracting the major version number.
@@ -218,11 +219,12 @@ pub fn generate_csproj(
 				.file_stem()
 				.map(|s| s.to_string_lossy())
 				.unwrap_or(path.clone());
-			xml.push_str(&format!(
+			let _ = write!(
+				xml,
 				"    <Reference Include=\"{name}\">\n\
 				       <HintPath>{path}</HintPath>\n\
 				     </Reference>\n"
-			));
+			);
 		}
 		xml.push_str("  </ItemGroup>\n");
 	}
@@ -266,11 +268,17 @@ pub fn run_csharp(
 	// Absolutize reference paths via current_dir().join(path) — skip
 	// canonicalize to avoid "file not found" for not-yet-existing paths.
 	let cwd = std::env::current_dir().map_err(|e| CsharpError::Io(e.to_string()))?;
-	let abs_refs: Vec<std::path::PathBuf> =
-		references.iter().map(|r| cwd.join(r)).collect();
+	let abs_refs: Vec<std::path::PathBuf> = references.iter().map(|r| cwd.join(r)).collect();
 
 	let tfm = detect_target_framework()?;
-	let tmp_dir = cache_dir(class_name, csharp_source, build_raw, run_raw, &abs_refs, &tfm);
+	let tmp_dir = cache_dir(
+		class_name,
+		csharp_source,
+		build_raw,
+		run_raw,
+		&abs_refs,
+		&tfm,
+	);
 	let build_extra = expand_dotnet_args(build_raw);
 	let run_extra = expand_dotnet_args(run_raw);
 
@@ -383,8 +391,22 @@ mod tests {
 	// -----------------------------------------------------------------------
 	#[test]
 	fn cache_dir_differs_for_different_build_raw() {
-		let a = cache_dir("MyClass", "class body", "--configuration Debug", "", &[], "net8.0");
-		let b = cache_dir("MyClass", "class body", "--configuration Release", "", &[], "net8.0");
+		let a = cache_dir(
+			"MyClass",
+			"class body",
+			"--configuration Debug",
+			"",
+			&[],
+			"net8.0",
+		);
+		let b = cache_dir(
+			"MyClass",
+			"class body",
+			"--configuration Release",
+			"",
+			&[],
+			"net8.0",
+		);
 		assert_ne!(
 			a, b,
 			"cache_dir must differ when build_raw expands to different args"
@@ -406,8 +428,22 @@ mod tests {
 	// -----------------------------------------------------------------------
 	#[test]
 	fn cache_dir_differs_for_different_run_raw() {
-		let a = cache_dir("MyClass", "class body", "", "--rollForward Major", &[], "net8.0");
-		let b = cache_dir("MyClass", "class body", "", "--rollForward Minor", &[], "net8.0");
+		let a = cache_dir(
+			"MyClass",
+			"class body",
+			"",
+			"--rollForward Major",
+			&[],
+			"net8.0",
+		);
+		let b = cache_dir(
+			"MyClass",
+			"class body",
+			"",
+			"--rollForward Minor",
+			&[],
+			"net8.0",
+		);
 		assert_ne!(a, b, "cache_dir must differ when run_raw differs");
 	}
 
