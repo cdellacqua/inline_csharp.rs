@@ -1,206 +1,211 @@
-# inline java
+# inline_csharp
 
-Embed Java directly in Rust — evaluated at program runtime (`java!`, `java_fn!`) or at
-compile time (`ct_java!`).
+Embed C# directly in Rust — evaluated at program runtime (`csharp!`, `csharp_fn!`) or at
+compile time (`ct_csharp!`).
 
 ## Prerequisites
 
-Java 8+ with `javac` and `java` on `PATH`.
+.NET 10 SDK with `dotnet` on `PATH`.
 
 ## Quick start
 
 ```toml
 # Cargo.toml
 [dependencies]
-inline_java = "0.1.0"
+inline_csharp = "0.1.0"
 ```
 
-## `java!` — runtime, no parameters
+## `csharp!` — runtime, no parameters
 
-Compiles and runs Java each time the surrounding Rust code executes.  Expands
-to `Result<T, inline_java::JavaError>`.
+Compiles and runs C# each time the surrounding Rust code executes.  Expands
+to `Result<T, inline_csharp::CsharpError>`.
 
 ```rust
-use inline_java::java;
+use inline_csharp::csharp;
 
-// No type annotation needed — the macro infers `i32` from `static int run()`
-let x = java! {
-    static int run() {
+// No type annotation needed — the macro infers `i32` from `static int Run()`
+let x = csharp! {
+    static int Run() {
         return 42;
     }
 }.unwrap();
 ```
 
-## `java_fn!` — runtime, with parameters
+## `csharp_fn!` — runtime, with parameters
 
-Like `java!`, but `run(...)` may declare parameters.  Expands to a Rust
-function value `fn(P1, P2, …) -> Result<T, JavaError>`.  Parameters are
-serialised by Rust and piped to the Java process over stdin.
+Like `csharp!`, but `Run(...)` may declare parameters.  Expands to a Rust
+function value `fn(P1, P2, …) -> Result<T, CsharpError>`.  Parameters are
+serialised by Rust and piped to the C# process over stdin.
 
 ```rust
-use inline_java::java_fn;
+use inline_csharp::csharp_fn;
 
-// Single parameter — return type inferred from `static int run()`
-let doubled = java_fn! {
-    static int run(int n) {
+// Single parameter — return type inferred from `static int Run()`
+let doubled = csharp_fn! {
+    static int Run(int n) {
         return n * 2;
     }
 }(21).unwrap();
 
 // Multiple parameters
-let msg: String = java_fn! {
-    static String run(String greeting, String target) {
+let msg: String = csharp_fn! {
+    static string Run(string greeting, string target) {
         return greeting + ", " + target + "!";
     }
 }("Hello", "World").unwrap();
 
-// Optional parameter
-let result: Option<i32> = java_fn! {
-    import java.util.Optional;
-    static Optional<Integer> run(Optional<Integer> val) {
-        return val.map(x -> x * 2);
+// Nullable parameter
+let result: Option<i32> = csharp_fn! {
+    static int? Run(int? val) {
+        return val.HasValue ? val * 2 : null;
     }
 }(Some(21)).unwrap();
 ```
 
-## `ct_java!` — compile time
+## `ct_csharp!` — compile time
 
-Runs Java during `rustc` macro expansion and splices the result as a Rust
+Runs C# during `rustc` macro expansion and splices the result as a Rust
 literal at the call site.  No parameters are allowed (values must be
 compile-time constants).
 
 ```rust
-use inline_java::ct_java;
+use inline_csharp::ct_csharp;
 
-const PI: f64 = ct_java! {
-    static double run() {
-        return Math.PI;
+const PI: f64 = ct_csharp! {
+    static double Run() {
+        return System.Math.PI;
     }
 };
 
 // Arrays work too — result is a Rust array literal baked into the binary
-const PRIMES: [i32; 5] = ct_java! {
-    static int[] run() {
-        return new int[]{2, 3, 5, 7, 11};
+const PRIMES: [i32; 5] = ct_csharp! {
+    static int[] Run() {
+        return new int[] { 2, 3, 5, 7, 11 };
     }
 };
 ```
 
-## Supported parameter types (`java_fn!`)
+## Supported parameter types (`csharp_fn!`)
 
-Declare parameters in the Java `run(...)` signature; Rust receives them with
+Declare parameters in the C# `Run(...)` signature; Rust receives them with
 the mapped types below.
 
-| Java parameter type    | Rust parameter type  |
+| C# parameter type      | Rust parameter type  |
 |------------------------|----------------------|
-| `byte`                 | `i8`                 |
+| `sbyte`                | `i8`                 |
+| `byte`                 | `u8`                 |
 | `short`                | `i16`                |
+| `ushort`               | `u16`                |
 | `int`                  | `i32`                |
+| `uint`                 | `u32`                |
 | `long`                 | `i64`                |
+| `ulong`                | `u64`                |
 | `float`                | `f32`                |
 | `double`               | `f64`                |
-| `boolean`              | `bool`               |
+| `bool`                 | `bool`               |
 | `char`                 | `char`               |
-| `String`               | `&str`               |
-| `T[]` / `List<BoxedT>` | `&[T]`               |
-| `Optional<BoxedT>`     | `Option<T>`          |
+| `string`               | `&str`               |
+| `T[]` / `List<T>`      | `&[T]`               |
+| `T?`                   | `Option<T>`          |
 
 ## Supported return types
 
-| Java return type       | Rust return type  |
+| C# return type         | Rust return type  |
 |------------------------|-------------------|
-| `byte`                 | `i8`              |
+| `sbyte`                | `i8`              |
+| `byte`                 | `u8`              |
 | `short`                | `i16`             |
+| `ushort`               | `u16`             |
 | `int`                  | `i32`             |
+| `uint`                 | `u32`             |
 | `long`                 | `i64`             |
+| `ulong`                | `u64`             |
 | `float`                | `f32`             |
 | `double`               | `f64`             |
-| `boolean`              | `bool`            |
+| `bool`                 | `bool`            |
 | `char`                 | `char`            |
-| `String`               | `String`          |
-| `T[]` / `List<BoxedT>` | `Vec<T>`          |
-| `Optional<BoxedT>`     | `Option<T>`       |
+| `string`               | `String`          |
+| `T[]` / `List<T>`      | `Vec<T>`          |
+| `T?`                   | `Option<T>`       |
 
-Types can be nested arbitrarily: `Optional<List<Integer>>` → `Option<Vec<i32>>`,
-`List<String[]>` → `Vec<Vec<String>>`, etc.
+Types can be nested arbitrarily: `List<string>[]` → `Vec<Vec<String>>`,
+`int?[]` → `Vec<Option<i32>>`, etc.
 
 ## Options
 
-The following optional `key = "value"` pairs may appear before the Java body, separated by
+The following optional `key = "value"` pairs may appear before the C# body, separated by
 commas:
 
-- `javac = "<args>"` — extra arguments for `javac` (shell-quoted).
-- `java  = "<args>"` — extra arguments for `java` (shell-quoted).
+- `build = "<args>"` — extra arguments passed to `dotnet build`.
+- `run   = "<args>"` — extra arguments passed to `dotnet <dll>` at runtime.
+- `reference = "<path>"` — path to a DLL to reference (repeatable).
 
 ```rust,ignore
-use inline_java::java;
+use inline_csharp::csharp;
 
-let result: String = java! {
-    javac = "-cp ./my.jar",
-    java  = "-cp ./my.jar",
-    import com.example.MyClass;
-    static String run() {
-        return new MyClass().greet();
+let result: i32 = csharp! {
+    build = "--no-restore",
+    reference = "../../libs/Foo.dll",
+    static int Run() {
+        return Foo.Value;
     }
 }.unwrap();
 ```
 
 ## Cache directory
 
-Compiled `.class` files are cached so that unchanged Java code is not
+Compiled assemblies are cached so that unchanged C# code is not
 recompiled on every run.  The cache root is resolved in this order:
 
 | Priority | Location |
 |----------|----------|
-| 1 | `INLINE_JAVA_CACHE_DIR` environment variable (if set and non-empty) |
-| 2 | Platform cache directory — `~/.cache/inline_java` on Linux, `~/Library/Caches/inline_java` on macOS, `%LOCALAPPDATA%\inline_java` on Windows |
-| 3 | `<system temp>/inline_java` (fallback if the platform cache dir is unavailable) |
+| 1 | `INLINE_CSHARP_CACHE_DIR` environment variable (if set and non-empty) |
+| 2 | Platform cache directory — `~/.cache/inline_csharp` on Linux, `~/Library/Caches/inline_csharp` on macOS, `%LOCALAPPDATA%\inline_csharp` on Windows |
+| 3 | `<system temp>/inline_csharp` (fallback if the platform cache dir is unavailable) |
 
-Each compiled class gets its own subdirectory named
-`<ClassName>_<hash>/`, where the hash covers the Java source, the
-expanded `javac` flags, the current working directory, and the raw `java`
-flags.  This means changing any of those inputs automatically triggers a
-fresh compilation.
+Each compiled assembly gets its own subdirectory named
+`<ClassName>_<hash>/`, where the hash covers the C# source, the
+expanded `build` flags, the current working directory, the raw `run`
+flags, and the reference DLL paths.  Changing any of those inputs
+automatically triggers a fresh compilation.
 
-## Using project Java source files
+## Using project C# source files / namespaces
 
-Use `import` or `package` directives together with `javac = "-sourcepath <path>"`
-(or `-classpath`) to call into your own Java code:
+Use `using` or `namespace` directives together with `reference = "..."` or
+`build = "--sourcepath <path>"` to call into your own C# code:
 
 ```rust
-use inline_java::java;
+use inline_csharp::csharp;
 
-// import style
-let s: String = java! {
-    javac = "-sourcepath .",
-    import com.example.demo.*;
-    static String run() {
-        return new HelloWorld().greet();
+// using style
+let s: String = csharp! {
+    using MyNamespace;
+    static string Run() {
+        return new MyClass().Greet();
     }
 }.unwrap();
 
-// package style — the generated class becomes part of the named package
-let s: String = java! {
-    javac = "-sourcepath .",
-    package com.example.demo;
-    static String run() {
-        return new HelloWorld().greet();
+// namespace style — the generated class becomes part of the named namespace
+let s: String = csharp! {
+    namespace MyNamespace;
+    static string Run() {
+        return new MyClass().Greet();
     }
 }.unwrap();
 ```
 
 ## Refactoring use case
 
-`inline_java` is particularly well-suited for **incremental Java → Rust
+`inline_csharp` is particularly well-suited for **incremental C# → Rust
 migrations**.  The typical workflow is:
 
-1. Keep the original Java logic intact.
+1. Keep the original C# logic intact.
 2. Write the replacement in Rust.
-3. Use `java_fn!` to call the original Java with the same inputs and assert
+3. Use `csharp_fn!` to call the original C# with the same inputs and assert
    that both implementations produce identical outputs.
 
 ```rust,no_run
-use inline_java::java_fn;
+use inline_csharp::csharp_fn;
 
 fn my_rust_impl(n: i32) -> i32 {
     // … new Rust code …
@@ -208,16 +213,16 @@ fn my_rust_impl(n: i32) -> i32 {
 }
 
 #[test]
-fn parity_with_java() {
-    let java_impl = java_fn! {
-        static int run(int n) {
-            // original Java logic, verbatim
+fn parity_with_csharp() {
+    let csharp_impl = csharp_fn! {
+        static int Run(int n) {
+            // original C# logic, verbatim
             return n * 2;
         }
     };
 
     for n in [0, 1, -1, 42, i32::MAX / 2] {
-        let expected = java_impl(n).unwrap();
+        let expected = csharp_impl(n).unwrap();
         assert_eq!(my_rust_impl(n), expected, "diverged for n={n}");
     }
 }
@@ -225,9 +230,9 @@ fn parity_with_java() {
 
 ## Crate layout
 
-| Crate                | Purpose                                                     |
-|----------------------|-------------------------------------------------------------|
-| `inline_java`        | Public API — re-exports macros and core types               |
-| `inline_java_macros` | Proc-macro implementation (`java!`, `java_fn!`, `ct_java!`) |
-| `inline_java_core`   | Runtime helpers (`run_java`, `JavaError`)                   |
-| `inline_java_demo`   | Demo binary                                                 |
+| Crate                   | Purpose                                                          |
+|-------------------------|------------------------------------------------------------------|
+| `inline_csharp`         | Public API — re-exports macros and core types                    |
+| `inline_csharp_macros`  | Proc-macro implementation (`csharp!`, `csharp_fn!`, `ct_csharp!`) |
+| `inline_csharp_core`    | Runtime helpers (`run_csharp`, `CsharpError`)                    |
+| `inline_csharp_demo`    | Demo binary                                                      |
