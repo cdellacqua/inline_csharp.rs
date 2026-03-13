@@ -210,7 +210,19 @@ pub fn generate_csproj(
 		xml.push_str("  <ItemGroup>\n");
 		for r in references {
 			let path = r.to_string_lossy();
-			xml.push_str(&format!("    <Reference Include=\"{path}\" />\n"));
+			// Use the DLL stem as the assembly identity and <HintPath> for the
+			// file path.  SDK-style projects treat `Include` as an assembly
+			// name, not a file path, so a bare path in `Include` is silently
+			// ignored by the resolver.
+			let name = r
+				.file_stem()
+				.map(|s| s.to_string_lossy())
+				.unwrap_or(path.clone());
+			xml.push_str(&format!(
+				"    <Reference Include=\"{name}\">\n\
+				       <HintPath>{path}</HintPath>\n\
+				     </Reference>\n"
+			));
 		}
 		xml.push_str("  </ItemGroup>\n");
 	}

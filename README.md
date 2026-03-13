@@ -171,8 +171,7 @@ automatically triggers a fresh compilation.
 
 ## Using project C# source files / namespaces
 
-Use `using` or `namespace` directives together with `reference = "..."` or
-`build = "--sourcepath <path>"` to call into your own C# code:
+Use `using` or `namespace` directives together with `reference = "..."` to call into your own C# code:
 
 ```rust,no_run
 use inline_csharp::csharp;

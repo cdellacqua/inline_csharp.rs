@@ -1,4 +1,22 @@
 use inline_csharp::{ct_csharp, csharp, csharp_fn};
+use std::process::Command;
+
+fn build_demo_dll(out_dir: &str) {
+	let manifest_dir = env!("CARGO_MANIFEST_DIR");
+	std::fs::create_dir_all(out_dir).expect("create output dir");
+	let status = Command::new("dotnet")
+		.args([
+			"build",
+			&format!("{manifest_dir}/DemoLib/DemoLib.csproj"),
+			"-o",
+			out_dir,
+			&format!("-p:BaseIntermediateOutputPath={out_dir}/obj/"),
+			"--nologo",
+		])
+		.status()
+		.expect("dotnet");
+	assert!(status.success(), "dotnet build failed building demo DLL");
+}
 
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -47,7 +65,19 @@ fn main() {
 	.unwrap();
 	println!("build flag demo: {flagged}");
 
-	// 6. csharp! returning int[]
+	// 6. csharp! with reference = (pre-built DLL)
+	build_demo_dll("/tmp/inline_csharp_demo_dll");
+	let imports_dll: String = csharp! {
+		reference = "/tmp/inline_csharp_demo_dll/DemoLib.dll",
+		using DemoLib;
+		static string Run() {
+			return new HelloWorld().Greet();
+		}
+	}
+	.unwrap();
+	println!("{imports_dll}");
+
+	// 7. csharp! returning int[]
 	let nums: Vec<i32> = csharp! {
 		static int[] Run() {
 			return new int[] { 10, 20, 30, 40, 50 };
@@ -56,7 +86,7 @@ fn main() {
 	.unwrap();
 	println!("int[] from C#: {nums:?}");
 
-	// 7. csharp! returning List<string>
+	// 8. csharp! returning List<string>
 	let words: Vec<String> = csharp! {
 		using System.Collections.Generic;
 		static List<string> Run() {
@@ -66,13 +96,13 @@ fn main() {
 	.unwrap();
 	println!("List<string> from C#: {words:?}");
 
-	// 8. ct_csharp! compile-time int array
+	// 9. ct_csharp! compile-time int array
 	println!("first 5 primes (ct_csharp): {PRIMES:?}");
 
-	// 9. ct_csharp! compile-time string array
+	// 10. ct_csharp! compile-time string array
 	println!("days (ct_csharp): {DAYS:?}");
 
-	// 10-11. ct_csharp! Optional (nullable) constants
+	// 11-14. ct_csharp! Optional (nullable) constants
 	assert_eq!(OPT_INT_SOME, Some(99));
 	assert_eq!(OPT_INT_NONE, None::<i32>);
 	assert_eq!(OPT_STR_SOME, Some(true));

@@ -5,6 +5,8 @@
 // These are faithful C# translations of the Java nested_generics input tests
 // that used Optional<T> with List and array types.
 
+use std::f64::consts::PI;
+
 use inline_csharp::csharp_fn;
 
 // ── Basic value-type nullable input tests ────────────────────────────────────
@@ -128,9 +130,9 @@ fn csharp_fn_arg_nullable_double_present() {
 		static double? Run(double? v) {
 			return v;
 		}
-	}(Some(3.14f64))
+	}(Some(PI))
 	.unwrap();
-	assert!((v.unwrap() - 3.14f64).abs() < 1e-10);
+	assert!((v.unwrap() - PI).abs() < 1e-10);
 }
 
 // double? as input absent → Option<f64>
