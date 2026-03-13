@@ -174,7 +174,7 @@ automatically triggers a fresh compilation.
 Use `using` or `namespace` directives together with `reference = "..."` or
 `build = "--sourcepath <path>"` to call into your own C# code:
 
-```rust
+```rust,no_run
 use inline_csharp::csharp;
 
 // using style
@@ -184,7 +184,10 @@ let s: String = csharp! {
         return new MyClass().Greet();
     }
 }.unwrap();
+```
 
+```rust,no_run
+use inline_csharp::csharp;
 // namespace style — the generated class becomes part of the named namespace
 let s: String = csharp! {
     namespace MyNamespace;

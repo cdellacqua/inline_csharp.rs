@@ -91,6 +91,7 @@ fn csharp_runtime_list_string() {
 #[test]
 fn csharp_runtime_abstract_class_override() {
 	let sound: String = csharp! {
+		namespace MyNamespace;
 		abstract class Animal { public abstract string Sound(); }
 		class Dog : Animal { public override string Sound() { return "woof"; } }
 		static string Run() {

@@ -1263,10 +1263,17 @@ fn parse_csharp_source(stream: proc_macro2::TokenStream) -> Result<ParsedCsharp,
 		String::new()
 	};
 
-	// Extract namespace declaration from outer section (substring search).
+	// Extract namespace declaration from outer section (substring search),
+	// then strip it from `outer` so it doesn't appear twice in the generated file.
 	let namespace_decl = parse_namespace_name(&outer)
 		.map(|ns| format!("namespace {ns};"))
 		.unwrap_or_default();
+	let outer = if namespace_decl.is_empty() {
+		outer
+	} else {
+		let stripped = outer.replacen(&namespace_decl, "", 1);
+		stripped.trim().to_string()
+	};
 
 	Ok(ParsedCsharp {
 		usings,
