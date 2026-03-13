@@ -5,7 +5,7 @@ compile time (`ct_csharp!`).
 
 ## Prerequisites
 
-.NET 10 SDK with `dotnet` on `PATH`.
+.NET 8 (or later) SDK with `dotnet` on `PATH`.
 
 ## Quick start
 
@@ -206,7 +206,7 @@ migrations**.  The typical workflow is:
 3. Use `csharp_fn!` to call the original C# with the same inputs and assert
    that both implementations produce identical outputs.
 
-```rust,no_run
+```rust
 use inline_csharp::csharp_fn;
 
 fn my_rust_impl(n: i32) -> i32 {
@@ -214,7 +214,6 @@ fn my_rust_impl(n: i32) -> i32 {
     n * 2
 }
 
-#[test]
 fn parity_with_csharp() {
     let csharp_impl = csharp_fn! {
         static int Run(int n) {
@@ -228,6 +227,8 @@ fn parity_with_csharp() {
         assert_eq!(my_rust_impl(n), expected, "diverged for n={n}");
     }
 }
+
+parity_with_csharp();
 ```
 
 ## Crate layout
