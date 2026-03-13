@@ -1273,15 +1273,11 @@ fn parse_csharp_source(stream: proc_macro2::TokenStream) -> Result<ParsedCsharp,
 
 	// Extract namespace declaration from outer section (substring search),
 	// then strip it from `outer` so it doesn't appear twice in the generated file.
-	let namespace_decl = parse_namespace_name(&outer)
-		.map(|ns| format!("namespace {ns};"))
-		.unwrap_or_default();
-	let outer = if namespace_decl.is_empty() {
-		outer
-	} else {
-		let stripped = outer.replacen(&namespace_decl, "", 1);
-		stripped.trim().to_string()
-	};
+	// We strip using the raw indices from `outer` rather than re-searching for the
+	// normalised `namespace_decl` string, because the fallback token serialisation
+	// may insert spaces before ';' (e.g. "namespace MyNamespace ;") which would
+	// prevent an exact string match.
+	let (namespace_decl, outer) = strip_namespace_decl(outer);
 
 	Ok(ParsedCsharp {
 		usings,
@@ -1373,17 +1369,37 @@ fn make_class_name(
 	format!("{prefix}_{:016x}", h.finish())
 }
 
-/// Extract the namespace name from a source string using substring search.
-fn parse_namespace_name(source: &str) -> Option<String> {
+/// Extract and strip the namespace declaration from `outer`.
+///
+/// Returns `(namespace_decl, stripped_outer)`.  Unlike the previous approach of
+/// re-searching for the *normalised* `"namespace Foo;"` string, this function
+/// locates the declaration by raw byte offsets so it works even when the
+/// fallback token serialiser inserts spaces before `';'` (e.g.
+/// `"namespace MyNamespace ;"`).
+fn strip_namespace_decl(outer: String) -> (String, String) {
 	let marker = "namespace ";
-	let i = source.find(marker)?;
-	if i > 0 && !source[..i].ends_with(|c: char| c.is_whitespace()) {
-		return None;
+	let Some(i) = outer.find(marker) else {
+		return (String::new(), outer);
+	};
+	if i > 0 && !outer[..i].ends_with(|c: char| c.is_whitespace()) {
+		return (String::new(), outer);
 	}
-	let rest = source[i + marker.len()..].trim_start();
-	let semi = rest.find(';')?;
-	let ns = rest[..semi].trim().replace(|c: char| c.is_whitespace(), "");
-	if ns.is_empty() { None } else { Some(ns) }
+	let after_marker = i + marker.len();
+	let rest = outer[after_marker..].trim_start();
+	let offset_trim = outer[after_marker..].len() - rest.len();
+	let Some(semi_in_rest) = rest.find(';') else {
+		return (String::new(), outer);
+	};
+	let ns = rest[..semi_in_rest]
+		.trim()
+		.replace(|c: char| c.is_whitespace(), "");
+	if ns.is_empty() {
+		return (String::new(), outer);
+	}
+	// Byte index of ';' in `outer`.
+	let semi_abs = after_marker + offset_trim + semi_in_rest;
+	let stripped = format!("{}{}", &outer[..i], &outer[semi_abs + 1..]);
+	(format!("namespace {ns};"), stripped.trim().to_string())
 }
 
 /// Render the complete C# source file.
