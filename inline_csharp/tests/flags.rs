@@ -182,3 +182,20 @@ fn csharp_runtime_reference_dll() {
 	};
 	assert_eq!(val, Ok("Hello, World!".to_string()));
 }
+
+// reference = "..." : relative path resolved against CWD (crate root)
+
+#[test]
+fn csharp_runtime_reference_dll_relative_path() {
+	// Place the DLL inside the workspace target directory so it is never
+	// committed but is stable across test runs on the same machine.
+	build_demo_dll("../target/inline_csharp_test_dlls/Greeter.dll");
+	let val: Result<String, _> = csharp! {
+		reference = "../target/inline_csharp_test_dlls/Greeter.dll",
+		using GreeterLib;
+		static string Run() {
+			return new Greeter().Greet();
+		}
+	};
+	assert_eq!(val, Ok("Hello, World!".to_string()));
+}
