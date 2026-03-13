@@ -382,7 +382,7 @@ impl CsharpType {
 			String::new()
 		} else {
 			let mut s = String::from(
-				"\t\tBinaryReader _br = new BinaryReader(Console.OpenStandardInput());\n",
+				"\t\tSystem.IO.BinaryReader _br = new System.IO.BinaryReader(System.Console.OpenStandardInput());\n",
 			);
 			for (ty, name) in params {
 				writeln!(s, "\t\t{}", csharp_br_read(ty, name, 0)).unwrap();
@@ -501,12 +501,12 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 			// Top-level string: raw UTF-8, no length prefix
 			format!(
 				"byte[] _b = System.Text.Encoding.UTF8.GetBytes({var}); \
-				 Console.OpenStandardOutput().Write(_b, 0, _b.Length);"
+				 System.Console.OpenStandardOutput().Write(_b, 0, _b.Length);"
 			)
 		}
 		CsharpType::Char => {
 			format!(
-				"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+				"System.IO.BinaryWriter _bw = new System.IO.BinaryWriter(System.Console.OpenStandardOutput());\n\
 				 \t\t_bw.Write((ushort){var});\n\
 				 \t\t_bw.Flush();"
 			)
@@ -515,7 +515,7 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 			let inner_cs_type = inner.csharp_type_name();
 			let ser_body = csharp_ser_element(inner, "_e0", "_bw", 1);
 			format!(
-				"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+				"System.IO.BinaryWriter _bw = new System.IO.BinaryWriter(System.Console.OpenStandardOutput());\n\
 				 \t\t_bw.Write((uint){var}.Length);\n\
 				 \t\tforeach ({inner_cs_type} _e0 in {var}) {{\n\
 				 \t\t\t{ser_body}\n\
@@ -527,7 +527,7 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 			let inner_cs_type = inner.csharp_type_name();
 			let ser_body = csharp_ser_element(inner, "_e0", "_bw", 1);
 			format!(
-				"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+				"System.IO.BinaryWriter _bw = new System.IO.BinaryWriter(System.Console.OpenStandardOutput());\n\
 				 \t\t_bw.Write((uint){var}.Count);\n\
 				 \t\tforeach ({inner_cs_type} _e0 in {var}) {{\n\
 				 \t\t\t{ser_body}\n\
@@ -541,7 +541,7 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 				// Nullable<T> value type: .HasValue / .Value
 				let ser_body = csharp_ser_element(inner, &format!("{var}.Value"), "_bw", 1);
 				format!(
-					"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+					"System.IO.BinaryWriter _bw = new System.IO.BinaryWriter(System.Console.OpenStandardOutput());\n\
 					 \t\tif ({var}.HasValue) {{\n\
 					 \t\t\t_bw.Write((byte)1);\n\
 					 \t\t\t{inner_cs_type} _opt_val = {var}.Value;\n\
@@ -555,7 +555,7 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 				// Nullable reference type (string?, T[]?, List<T>?): != null check
 				let ser_body = csharp_ser_element(inner, "_opt_val", "_bw", 1);
 				format!(
-					"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+					"System.IO.BinaryWriter _bw = new System.IO.BinaryWriter(System.Console.OpenStandardOutput());\n\
 					 \t\tif ({var} != null) {{\n\
 					 \t\t\t_bw.Write((byte)1);\n\
 					 \t\t\t{inner_cs_type} _opt_val = {var};\n\
@@ -571,7 +571,7 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 		_ => {
 			let cs_type = ty.csharp_type_name();
 			format!(
-				"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+				"System.IO.BinaryWriter _bw = new System.IO.BinaryWriter(System.Console.OpenStandardOutput());\n\
 				 \t\t_bw.Write(({cs_type}){var});\n\
 				 \t\t_bw.Flush();"
 			)
@@ -1407,7 +1407,7 @@ fn format_csharp_source(
 	main_method: &str,
 ) -> String {
 	format!(
-		"using System;\nusing System.Collections.Generic;\nusing System.IO;\n{usings}\n{namespace_decl}\nclass {class_name} {{\n\n{outer}\n\n{body}\n\n{main_method}\n}}\n"
+		"{usings}\n{namespace_decl}\nclass {class_name} {{\n\n{outer}\n\n{body}\n\n{main_method}\n}}\n"
 	)
 }
 
