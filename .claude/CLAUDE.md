@@ -1,35 +1,47 @@
-# inline_java project memory
+# inline_csharp project memory
 
 ## Project structure
-- `/home/ubuntu/Dev/inline_java/` — workspace root
-- `inline_java_core/src/lib.rs` — shared core: `JavaError`, `run_java`, `expand_java_args`, `cache_dir`
-- `inline_java_macros/src/lib.rs` — proc macro implementation (`java!`, `java_fn!`, `ct_java!`)
-- `inline_java/src/lib.rs` — thin re-export layer: selectively re-exports `{JavaError, expand_java_args, run_java}` from core and `{java, java_fn, ct_java}` from macros
-- `inline_java_demo/src/main.rs` — demo crate
-- `inline_java_demo/com/example/demo/` — Java source files (Greetings.java, HelloWorld.java)
+- `/home/ubuntu/Dev/inline_csharp/` — workspace root
+- `inline_csharp_core/src/lib.rs` — shared core: `CsharpError`, `run_csharp`, `expand_dotnet_args`, `cache_dir`, `detect_target_framework`, `generate_csproj`
+- `inline_csharp_macros/src/lib.rs` — proc macro implementation (`csharp!`, `csharp_fn!`, `ct_csharp!`)
+- `inline_csharp/src/lib.rs` — thin re-export layer: re-exports `{CsharpError, expand_dotnet_args, run_csharp}` from core and `{csharp, csharp_fn, ct_csharp}` from macros
+- `inline_csharp_demo/src/main.rs` — demo crate
+- `inline_csharp_demo/DemoLib/` — external C# library (DemoLib.csproj, HelloWorld.cs, Greetings.cs)
 
 ## Architecture
-- `java!` — runtime macro: zero-arg; compiles+runs Java at program runtime; expands to `Result<T, JavaError>`
-- `java_fn!` — runtime macro: with parameters; expands to a Rust function value `fn(P1, ...) -> Result<T, JavaError>`; parameters are serialised via stdin
-- `ct_java!` — compile-time macro: runs Java during Rust compilation (proc-macro expansion); expands to a Rust literal
-- All three support `import` and `package` directives to use project Java source files
-- Dependency graph: `inline_java_core` ← `inline_java_macros` and `inline_java`; `inline_java` → `inline_java_macros`; no cycles
+- `csharp!` — runtime macro: zero-arg; compiles+runs C# at program runtime; expands to `Result<T, CsharpError>`
+- `csharp_fn!` — runtime macro: with parameters; expands to a Rust function value `fn(P1, ...) -> Result<T, CsharpError>`; parameters are serialised via stdin
+- `ct_csharp!` — compile-time macro: runs C# during Rust compilation (proc-macro expansion); expands to a Rust literal
+- All three support `using` and `namespace` directives
+- Dependency graph: `inline_csharp_core` ← `inline_csharp_macros` and `inline_csharp`; `inline_csharp` → `inline_csharp_macros`; no cycles
 
 ## Key implementation details
-- **Two-phase execution**: `javac [javac_extra] -d $tmpdir $src.java` then `java [java_extra] -cp $tmpdir $ClassName`
-- **Optional flags**: `javac = "..."` and `java = "..."` key-value pairs before the Java body, comma-separated; values are split on whitespace into individual args
-- **Naming**: `make_class_name` hashes (imports+outer+body+javac_opts+java_opts) to produce `InlineJava_<hex>` or `CtJava_<hex>`
-- **Temp dir**: `cache_dir` returns `<sys_tmp>/<class_name>_<hex>/` where the second hex is a hash of (java_class+javac_raw+java_raw); two separate hashes ensure different opts and different source each get their own dir
-- **Locking**: `fd-lock` file lock on `$tmpdir/.lock` (cross-process + cross-thread); `.done` sentinel marks successful compilation; optimistic pre-check before acquiring lock. Lives in `inline_java_core::run_java`.
-- **Parameter passing** (`java_fn!`): Rust serialises each parameter to `_stdin_bytes` (big-endian binary via `DataOutputStream` protocol); Java reads with `DataInputStream`; return value is binary-serialised back to stdout
-- **compile_run_java_now** (in macros): thin wrapper around `inline_java_core::run_java` mapping `JavaError → String` for `compile_error!` diagnostics
-- **Package handling**: if user writes `package com.example;`, class runs as `com.example.InlineJava_xxx`
-- **parse_package_name**: uses `find("package ")` + `find(';')` string search (NOT split_whitespace — proc_macro2 renders `com.example.demo;` without spaces around dots)
-- **extract_opts / try_parse_opt**: parse `Ident("javac"|"java") Punct("=") Literal(string)` triples from the front of the token stream using a separate `&[TokenTree]`-borrowing helper (avoids borrow-then-drain conflict)
+- **Two-phase execution**: `dotnet build <class>.csproj <build_extra> -o <out>/ --nologo` then `dotnet <out>/<class>.dll <run_extra>`
+- **Optional flags**: `build = "..."`, `run = "..."`, and `reference = "..."` key-value pairs before the C# body, comma-separated; `reference` is repeatable
+- **Auto-detected TFM**: `detect_target_framework()` runs `dotnet --version` and derives the TFM moniker (e.g., `net8.0`)
+- **Generated .csproj**: `<OutputType>Exe</OutputType>`, `<Nullable>enable</Nullable>`, `<ImplicitUsings>disable</ImplicitUsings>`, `<Optimize>true</Optimize>`; each `reference` becomes a `<Reference>` element with `<HintPath>`
+- **Naming**: `make_class_name` hashes (usings+outer+body+opts) to produce `InlineCsharp_<hex>` or `CtCsharp_<hex>`
+- **Cache dir**: `cache_dir` returns platform cache dir → `INLINE_CSHARP_CACHE_DIR` env var → `<temp>/inline_csharp`; subdir is `<class_name>_<hash>/` where hash covers source+build args+CWD+run args+references+TFM
+- **Locking**: `fd-lock` RwLock on `$cachedir/.lock`; `.done` sentinel marks successful compilation; optimistic pre-check before acquiring lock
+
+## Wire format (binary serialization, Rust ↔ C#)
+- Rust → C# (stdin): big-endian, via `BinaryReader` in C#
+- C# → Rust (stdout): little-endian, via `BinaryWriter` in C#
+- Top-level `string` return: raw UTF-8, no length prefix
+- `string` inside container: 4-byte LE u32 length + UTF-8 bytes
+- Nullable: 1-byte tag (0=null, 1=present) + encoded value
+- Array/List: 4-byte LE u32 count + N × encoded element
+
+## Supported types
+Scalars: `sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, `double`, `bool`, `char`, `string`
+Composites: `Array<T>` (→ `T[]` / `Vec<T>`), `List<T>` (→ `List<T>` / `Vec<T>`), `Nullable<T>` (→ `T?` / `Option<T>`)
+Nested composites supported.
 
 ## Pitfalls encountered
-- `split_whitespace` on imports string fails for `package com.example.demo;` because proc_macro2 serializes the token stream without spaces around dots/semicolons (e.g., `"package com.example.demo;"` not `"package com . example . demo ;"`)
-- Old `java Foo.java` (JEP 330 single-file launcher) doesn't support multi-file/package compilation
+- `split_whitespace` on namespace string fails for `namespace com.example;` because proc_macro2 serializes without spaces around dots/semicolons; use `find("namespace ")` + `find(';')` substring search
+- Top-level `string` return must NOT have length prefix (differs from string-in-container)
+- Value-type nullables (`int?`) use `.HasValue`/`.Value`; reference-type nullables (`string?`) use `!= null` check — both must be handled separately in codegen
+- Compilation errors come from `dotnet build` stdout (not stderr)
 
-## Java setup
-- Java 21 (OpenJDK 21.0.10) at /usr/bin/java and /usr/bin/javac
+## .NET setup
+- .NET 8 SDK (dotnet 8.0.125) at `/usr/bin/dotnet`
