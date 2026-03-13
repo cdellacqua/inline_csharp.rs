@@ -438,9 +438,19 @@ fn csharp_br_read(ty: &CsharpType, name: &str, depth: usize) -> String {
 			let elem_var = format!("_elem_{name}_{depth}");
 			let inner_cs_type = inner.csharp_type_name();
 			let inner_read = csharp_br_read(inner, &elem_var, depth + 1);
+			// For jagged arrays (e.g. inner_cs_type = "string[]"), C# requires
+			// `new string[count][]` not `new string[][count]`. Strip trailing []
+			// from inner_cs_type and re-append after the size bracket.
+			let mut base = inner_cs_type.as_str();
+			let mut trailing = "";
+			if base.ends_with("[]") {
+				let end = base.len() - base.chars().rev().take_while(|&c| c == '[' || c == ']').count();
+				trailing = &base[end..];
+				base = &base[..end];
+			}
 			format!(
 				"uint {count_var} = _br.ReadUInt32();\n\
-				 \t\t{inner_cs_type}[] {name} = new {inner_cs_type}[{count_var}];\n\
+				 \t\t{inner_cs_type}[] {name} = new {base}[{count_var}]{trailing};\n\
 				 \t\tfor (int {i_var} = 0; {i_var} < {count_var}; {i_var}++) {{\n\
 				 \t\t\t{inner_read}\n\
 				 \t\t\t{name}[{i_var}] = {elem_var};\n\
