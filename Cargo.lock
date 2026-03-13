@@ -68,15 +68,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "inline_java"
+name = "inline_csharp"
 version = "0.1.0"
 dependencies = [
- "inline_java_core",
- "inline_java_macros",
+ "inline_csharp_core",
+ "inline_csharp_macros",
 ]
 
 [[package]]
-name = "inline_java_core"
+name = "inline_csharp_core"
 version = "0.1.0"
 dependencies = [
  "dirs",
@@ -86,17 +86,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "inline_java_demo"
+name = "inline_csharp_demo"
 version = "0.1.0"
 dependencies = [
- "inline_java",
+ "inline_csharp",
 ]
 
 [[package]]
-name = "inline_java_macros"
+name = "inline_csharp_macros"
 version = "0.1.0"
 dependencies = [
- "inline_java_core",
+ "inline_csharp_core",
  "litrs",
  "proc-macro2",
  "quote",
