@@ -548,7 +548,7 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 					"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
 					 \t\tif ({var} != null) {{\n\
 					 \t\t\t_bw.Write((byte)1);\n\
-					 \t\t\t{inner_cs_type} _opt_val = ({inner_cs_type}){var}!;\n\
+					 \t\t\t{inner_cs_type} _opt_val = {var};\n\
 					 \t\t\t{ser_body}\n\
 					 \t\t}} else {{\n\
 					 \t\t\t_bw.Write((byte)0);\n\
@@ -623,7 +623,7 @@ fn csharp_ser_element(ty: &CsharpType, var: &str, bw_name: &str, depth: usize) -
 				format!(
 					"if (({var}) != null) {{\n\
 					 \t\t\t\t{bw_name}.Write((byte)1);\n\
-					 \t\t\t\t{inner_cs_type} {opt_inner_var} = ({inner_cs_type})({var})!;\n\
+					 \t\t\t\t{inner_cs_type} {opt_inner_var} = {var};\n\
 					 \t\t\t\t{inner_ser}\n\
 					 \t\t\t}} else {{\n\
 					 \t\t\t\t{bw_name}.Write((byte)0);\n\

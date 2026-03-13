@@ -298,8 +298,10 @@ pub fn run_csharp(
 
 			let out = cmd.output().map_err(|e| CsharpError::Io(e.to_string()))?;
 			if !out.status.success() {
+				// Note: `dotnet build` writes compiler errors to stdout, not stderr.
+				// Ref. https://github.com/dotnet/sdk/issues/8481
 				return Err(CsharpError::CompilationFailed(
-					String::from_utf8_lossy(&out.stderr).into_owned(),
+					String::from_utf8_lossy(&out.stdout).into_owned(),
 				));
 			}
 
