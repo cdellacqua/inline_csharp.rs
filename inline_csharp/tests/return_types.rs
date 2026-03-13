@@ -1,66 +1,56 @@
-use inline_java::{ct_java, java};
+use inline_csharp::{ct_csharp, csharp};
 
 // ── Primitive arrays ──────────────────────────────────────────────────────────
 
-// java! with int[] return type
-
 #[test]
-fn java_runtime_int_array() {
-	let v: Vec<i32> = java! {
-		static int[] run() {
-			return new int[]{1, 2, 3, 4, 5};
+fn csharp_runtime_int_array() {
+	let v: Vec<i32> = csharp! {
+		static int[] Run() {
+			return new int[] { 1, 2, 3, 4, 5 };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec![1i32, 2, 3, 4, 5]);
 }
 
-// java! with double[] return type
-
 #[test]
-fn java_runtime_double_array() {
-	let v: Vec<f64> = java! {
-		static double[] run() {
-			return new double[]{1.5, 2.5, 3.5};
+fn csharp_runtime_double_array() {
+	let v: Vec<f64> = csharp! {
+		static double[] Run() {
+			return new double[] { 1.5, 2.5, 3.5 };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec![1.5f64, 2.5, 3.5]);
 }
 
-// java! with boolean[] return type
-
 #[test]
-fn java_runtime_boolean_array() {
-	let v: Vec<bool> = java! {
-		static boolean[] run() {
-			return new boolean[]{true, false, true};
+fn csharp_runtime_bool_array() {
+	let v: Vec<bool> = csharp! {
+		static bool[] Run() {
+			return new bool[] { true, false, true };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec![true, false, true]);
 }
 
-// java! with String[] return type
-
 #[test]
-fn java_runtime_string_array() {
-	let v: Vec<String> = java! {
-		static String[] run() {
-			return new String[]{"hello", "world"};
+fn csharp_runtime_string_array() {
+	let v: Vec<String> = csharp! {
+		static string[] Run() {
+			return new string[] { "hello", "world" };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec!["hello".to_string(), "world".to_string()]);
 }
 
-// java! with empty array
-
 #[test]
-fn java_runtime_empty_array() {
-	let v: Vec<i32> = java! {
-		static int[] run() {
-			return new int[]{};
+fn csharp_runtime_empty_array() {
+	let v: Vec<i32> = csharp! {
+		static int[] Run() {
+			return new int[] {};
 		}
 	}
 	.unwrap();
@@ -69,29 +59,24 @@ fn java_runtime_empty_array() {
 
 // ── Flat collections ──────────────────────────────────────────────────────────
 
-// java! with List<Integer> return type
-
 #[test]
-fn java_runtime_list_integer() {
-	let v: Vec<i32> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		static List<Integer> run() {
-			return Arrays.asList(10, 20, 30);
+fn csharp_runtime_list_int() {
+	let v: Vec<i32> = csharp! {
+		using System.Collections.Generic;
+		static List<int> Run() {
+			return new List<int> { 10, 20, 30 };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec![10i32, 20, 30]);
 }
 
-// java! with List<String> return type
-
 #[test]
-fn java_runtime_list_string() {
-	let v: Vec<String> = java! {
-		import java.util.Arrays;
-		static java.util.List<String> run() {
-			return Arrays.asList("foo", "bar", "baz");
+fn csharp_runtime_list_string() {
+	let v: Vec<String> = csharp! {
+		using System.Collections.Generic;
+		static List<string> Run() {
+			return new List<string> { "foo", "bar", "baz" };
 		}
 	}
 	.unwrap();
@@ -103,21 +88,13 @@ fn java_runtime_list_string() {
 
 // ── OOP ───────────────────────────────────────────────────────────────────────
 
-// java! with abstract class + subclass
-
 #[test]
-fn java_runtime_abstract_class_override() {
-	// No annotation needed — `static String run()` already tells the macro to produce String
-	let sound = java! {
-		abstract class Animal {
-			abstract String sound();
-		}
-		class Dog extends Animal {
-			@Override
-			String sound() { return "woof"; }
-		}
-		static String run() {
-			return new Dog().sound();
+fn csharp_runtime_abstract_class_override() {
+	let sound: String = csharp! {
+		abstract class Animal { public abstract string Sound(); }
+		class Dog : Animal { public override string Sound() { return "woof"; } }
+		static string Run() {
+			return new Dog().Sound();
 		}
 	}
 	.unwrap();
@@ -125,102 +102,92 @@ fn java_runtime_abstract_class_override() {
 }
 
 // ── Nested / composable container types ──────────────────────────────────────
-// These exercise the `>>` (and `>>>`) closing-angle-bracket tokenisation path.
 
-// List<List<Integer>> — return type closes with `>>`
+// List<List<int>>
 #[test]
-fn java_runtime_list_of_list_integer() {
-	let v: Vec<Vec<i32>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		static List<List<Integer>> run() {
-			List<Integer> a = Arrays.asList(1, 2, 3);
-			List<Integer> b = Arrays.asList(4, 5, 6);
-			return Arrays.asList(a, b);
+fn csharp_runtime_list_of_list_int() {
+	let v: Vec<Vec<i32>> = csharp! {
+		using System.Collections.Generic;
+		static List<List<int>> Run() {
+			var a = new List<int> { 1, 2, 3 };
+			var b = new List<int> { 4, 5, 6 };
+			return new List<List<int>> { a, b };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec![vec![1, 2, 3], vec![4, 5, 6]]);
 }
 
-// Optional<List<String>> — closes with `>>`
+// double? present
 #[test]
-fn java_runtime_optional_list_string_present() {
-	let v: Option<Vec<String>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<String>> run() {
-			return Optional.of(Arrays.asList("hello", "world"));
+fn csharp_runtime_nullable_double_present() {
+	let v: Option<f64> = csharp! {
+		static double? Run() {
+			return 2.5;
 		}
 	}
 	.unwrap();
-	assert_eq!(v, Some(vec!["hello".to_string(), "world".to_string()]));
+	assert_eq!(v, Some(2.5f64));
 }
 
+// double? absent
 #[test]
-fn java_runtime_optional_list_string_absent() {
-	let v: Option<Vec<String>> = java! {
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<String>> run() {
-			return Optional.empty();
+fn csharp_runtime_nullable_double_absent() {
+	let v: Option<f64> = csharp! {
+		static double? Run() {
+			return null;
 		}
 	}
 	.unwrap();
 	assert_eq!(v, None);
 }
 
-// List<Optional<Integer>> — closes with `>>`
+// List<int?>
 #[test]
-fn java_runtime_list_of_optional_integer() {
-	let v: Vec<Option<i32>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static List<Optional<Integer>> run() {
-			return Arrays.asList(Optional.of(10), Optional.empty(), Optional.of(30));
+fn csharp_runtime_list_of_nullable_int() {
+	let v: Vec<Option<i32>> = csharp! {
+		using System.Collections.Generic;
+		static List<int?> Run() {
+			return new List<int?> { 10, null, 30 };
 		}
 	}
 	.unwrap();
 	assert_eq!(v, vec![Some(10), None, Some(30)]);
 }
 
-// Optional<Optional<Boolean>> — closes with `>>` (two nested Optionals)
+// bool? present
 #[test]
-fn java_runtime_optional_optional_boolean_present() {
-	let v: Option<Option<bool>> = java! {
-		import java.util.Optional;
-		static Optional<Optional<Boolean>> run() {
-			return Optional.of(Optional.of(true));
+fn csharp_runtime_nullable_bool_present() {
+	let v: Option<bool> = csharp! {
+		static bool? Run() {
+			return true;
 		}
 	}
 	.unwrap();
-	assert_eq!(v, Some(Some(true)));
+	assert_eq!(v, Some(true));
 }
 
+// bool? absent
 #[test]
-fn java_runtime_optional_optional_boolean_outer_absent() {
-	let v: Option<Option<bool>> = java! {
-		import java.util.Optional;
-		static Optional<Optional<Boolean>> run() {
-			return Optional.empty();
+fn csharp_runtime_nullable_bool_absent() {
+	let v: Option<bool> = csharp! {
+		static bool? Run() {
+			return null;
 		}
 	}
 	.unwrap();
 	assert_eq!(v, None);
 }
 
-// List<List<String>> — closes with `>>`
+// List<List<string>>
 #[test]
-fn java_runtime_list_of_list_string() {
-	let v: Vec<Vec<String>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		static List<List<String>> run() {
-			List<String> a = Arrays.asList("foo", "bar");
-			List<String> b = Arrays.asList("baz");
-			return Arrays.asList(a, b);
+fn csharp_runtime_list_of_list_string() {
+	let v: Vec<Vec<String>> = csharp! {
+		using System.Collections.Generic;
+		static List<List<string>> Run() {
+			var a = new List<string> { "foo", "bar" };
+			var b = new List<string> { "baz" };
+			return new List<List<string>> { a, b };
 		}
 	}
 	.unwrap();
@@ -233,90 +200,162 @@ fn java_runtime_list_of_list_string() {
 	);
 }
 
-// ── ct_java! return types ─────────────────────────────────────────────────────
-
-// ct_java! with int[] return type
-
-const CT_INT_ARRAY: [i32; 3] = ct_java! {
-	static int[] run() {
-		return new int[]{100, 200, 300};
-	}
-};
-
+// List<string>? present — Java Optional<List<String>> present
 #[test]
-fn ct_java_int_array() {
-	assert_eq!(CT_INT_ARRAY, [100i32, 200, 300]);
-}
-
-// ct_java! with String[] return type
-
-const CT_STRING_ARRAY: [&str; 2] = ct_java! {
-	static String[] run() {
-		return new String[]{"compile", "time"};
-	}
-};
-
-#[test]
-fn ct_java_string_array() {
-	assert_eq!(CT_STRING_ARRAY, ["compile", "time"]);
-}
-
-// ct_java! with List<List<Integer>> — nested array literal at compile time
-const CT_NESTED_LIST: [[i32; 2]; 2] = ct_java! {
-	import java.util.Arrays;
-	import java.util.List;
-	static List<List<Integer>> run() {
-		List<Integer> a = Arrays.asList(10, 20);
-		List<Integer> b = Arrays.asList(30, 40);
-		return Arrays.asList(a, b);
-	}
-};
-
-#[test]
-fn ct_java_nested_list() {
-	assert_eq!(CT_NESTED_LIST, [[10, 20], [30, 40]]);
-}
-
-// ct_java! with Optional<List<Integer>> — Some([...]) at compile time
-const CT_OPTIONAL_LIST: Option<[i32; 3]> = ct_java! {
-	import java.util.Arrays;
-	import java.util.List;
-	import java.util.Optional;
-	static Optional<List<Integer>> run() {
-		return Optional.of(Arrays.asList(7, 8, 9));
-	}
-};
-
-#[test]
-fn ct_java_optional_list() {
-	assert_eq!(CT_OPTIONAL_LIST, Some([7, 8, 9]));
-}
-
-// ── Null return value ─────────────────────────────────────────────────────────
-
-#[test]
-fn java_runtime_null_string() {
-	let result: Result<String, _> = java! {
-		static String run() {
-			return null;
+fn csharp_runtime_nullable_list_string_present() {
+	let v: Option<Vec<String>> = csharp! {
+		using System.Collections.Generic;
+		static List<string>? Run() {
+			return new List<string> { "hello", "world" };
 		}
-	};
-	assert!(
-		result.is_err(),
-		"expected Err for null String return, got {result:?}"
+	}
+	.unwrap();
+	assert_eq!(
+		v,
+		Some(vec!["hello".to_string(), "world".to_string()])
 	);
 }
 
+// List<string>? absent — Java Optional<List<String>> absent
 #[test]
-fn java_runtime_null_string_array() {
-	// No annotation needed — type fully inferred from `static String[] run()`
-	let result = java! {
-		static String[] run() {
+fn csharp_runtime_nullable_list_string_absent() {
+	let v: Option<Vec<String>> = csharp! {
+		using System.Collections.Generic;
+		static List<string>? Run() {
 			return null;
+		}
+	}
+	.unwrap();
+	assert_eq!(v, None);
+}
+
+// List<bool?> present — covers nesting where inner element is nullable
+#[test]
+fn csharp_runtime_list_of_nullable_bool_present() {
+	let v: Vec<Option<bool>> = csharp! {
+		using System.Collections.Generic;
+		static List<bool?> Run() {
+			return new List<bool?> { true, null, false };
+		}
+	}
+	.unwrap();
+	assert_eq!(v, vec![Some(true), None, Some(false)]);
+}
+
+// List<bool?> absent via nullable wrapper
+#[test]
+fn csharp_runtime_nullable_list_of_bool_absent() {
+	let v: Option<Vec<Option<bool>>> = csharp! {
+		using System.Collections.Generic;
+		static List<bool?>? Run() {
+			return null;
+		}
+	}
+	.unwrap();
+	assert_eq!(v, None);
+}
+
+// string? present — nullable string return
+#[test]
+fn csharp_runtime_nullable_string_present() {
+	let v: Option<String> = csharp! {
+		static string? Run() {
+			return "hello nullable";
+		}
+	}
+	.unwrap();
+	assert_eq!(v, Some("hello nullable".to_string()));
+}
+
+// string? absent — null string return
+#[test]
+fn csharp_runtime_nullable_string_absent() {
+	let v: Option<String> = csharp! {
+		static string? Run() {
+			return null;
+		}
+	}
+	.unwrap();
+	assert_eq!(v, None);
+}
+
+// ── ct_csharp! return types ───────────────────────────────────────────────────
+
+const CT_INT_ARRAY: [i32; 3] = ct_csharp! {
+	static int[] Run() {
+		return new int[] { 100, 200, 300 };
+	}
+};
+
+#[test]
+fn ct_csharp_int_array() {
+	assert_eq!(CT_INT_ARRAY, [100i32, 200, 300]);
+}
+
+const CT_STRING_ARRAY: [&str; 2] = ct_csharp! {
+	static string[] Run() {
+		return new string[] { "compile", "time" };
+	}
+};
+
+#[test]
+fn ct_csharp_string_array() {
+	assert_eq!(CT_STRING_ARRAY, ["compile", "time"]);
+}
+
+// ct_csharp! with List<List<int>>
+const CT_NESTED_LIST: [[i32; 2]; 2] = ct_csharp! {
+	using System.Collections.Generic;
+	static List<List<int>> Run() {
+		var a = new List<int> { 10, 20 };
+		var b = new List<int> { 30, 40 };
+		return new List<List<int>> { a, b };
+	}
+};
+
+#[test]
+fn ct_csharp_nested_list() {
+	assert_eq!(CT_NESTED_LIST, [[10, 20], [30, 40]]);
+}
+
+// ct_csharp! with int? — Some value at compile time
+const CT_NULLABLE_INT: Option<i32> = ct_csharp! {
+	static int? Run() {
+		return 42;
+	}
+};
+
+#[test]
+fn ct_csharp_nullable_int() {
+	assert_eq!(CT_NULLABLE_INT, Some(42i32));
+}
+
+// ct_csharp! with List<int>? — Some value at compile time
+// Java: Optional<List<Integer>> present at compile time
+const CT_NULLABLE_LIST: Option<[i32; 3]> = ct_csharp! {
+	using System.Collections.Generic;
+	static List<int>? Run() {
+		return new List<int> { 7, 8, 9 };
+	}
+};
+
+#[test]
+fn ct_csharp_nullable_list() {
+	assert_eq!(CT_NULLABLE_LIST, Some([7i32, 8, 9]));
+}
+
+// ── Runtime error ─────────────────────────────────────────────────────────────
+
+#[test]
+fn csharp_runtime_divide_by_zero() {
+	let result: Result<i32, _> = csharp! {
+		static int Run() {
+			int zero = 0;
+			return 1 / zero;
 		}
 	};
 	assert!(
 		result.is_err(),
-		"expected Err for null String[] return, got {result:?}"
+		"expected Err for divide-by-zero, got {result:?}"
 	);
 }

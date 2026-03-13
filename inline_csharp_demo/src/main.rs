@@ -1,297 +1,214 @@
-use inline_java::{ct_java, java, java_fn};
-use std::process::Command;
-
-fn build_demo_jar(jar_path: &str) {
-	let manifest_dir = env!("CARGO_MANIFEST_DIR");
-	let classes_dir = format!("{jar_path}.d");
-	std::fs::create_dir_all(&classes_dir).expect("create classes dir");
-	let status = Command::new("javac")
-		.args([
-			"-d",
-			&classes_dir,
-			&format!("{manifest_dir}/com/example/demo/Greetings.java"),
-			&format!("{manifest_dir}/com/example/demo/HelloWorld.java"),
-		])
-		.status()
-		.expect("javac");
-	assert!(status.success(), "javac failed building demo jar");
-	let status = Command::new("jar")
-		.args(["cf", jar_path, "-C", &classes_dir, "."])
-		.status()
-		.expect("jar");
-	assert!(status.success(), "jar failed building demo jar");
-}
+use inline_csharp::{ct_csharp, csharp, csharp_fn};
 
 #[allow(clippy::too_many_lines)]
 fn main() {
-	// runtime, no input
-	let x: i32 = java! {
-		import java.util.concurrent.ThreadLocalRandom;
-
-		static int run() {
-			return ThreadLocalRandom.current().nextInt(0, 10);
+	// 1. csharp! runtime, no input — int return
+	let x: i32 = csharp! {
+		static int Run() {
+			int sum = 0;
+			for (int i = 1; i <= 10; i++) sum += i;
+			return sum;
 		}
 	}
 	.unwrap();
-	println!("Random from Java: {x}");
+	println!("Sum 1..10 from C#: {x}");
 
-	// runtime, with int parameter (java_fn!)
+	// 2. csharp_fn! with int parameter — double it
 	let n: i32 = 21;
-	let doubled: i32 = java_fn! {
-		static int run(int n) {
+	let doubled: i32 = csharp_fn! {
+		static int Run(int n) {
 			return n * 2;
 		}
 	}(n)
 	.unwrap();
 	println!("{n} * 2 = {doubled}");
 
-	// runtime, multiple String parameters (java_fn!)
+	// 3. csharp_fn! with string + string parameters — concatenate
 	let greeting = "Hello";
 	let target = "World";
-	let msg: String = java_fn! {
-		static String run(String greeting, String target) {
+	let msg: String = csharp_fn! {
+		static string Run(string greeting, string target) {
 			return greeting + ", " + target + "!";
 		}
 	}(greeting, target)
 	.unwrap();
 	println!("{msg}");
 
-	// compile-time constant
+	// 4. ct_csharp! compile-time constant — double (Math.PI)
 	println!("PI (baked at compile time): {PI_APPROX}");
 
-	let imports: String = java! {
-		javac = "-sourcepath .",
-		import com.example.demo.*;
-
-		static String run() {
-			return new HelloWorld().greet();
+	// 5. csharp! with build = "" (simple build flag demo)
+	let flagged: i32 = csharp! {
+		build = "--nologo",
+		static int Run() {
+			return 100;
 		}
 	}
 	.unwrap();
-	println!("{imports}");
+	println!("build flag demo: {flagged}");
 
-	build_demo_jar("/tmp/inline_java_demo_jar/demo.jar");
-	let imports_jar: String = java! {
-		javac = "-classpath /tmp/inline_java_demo_jar/demo.jar",
-		java = "-classpath /tmp/inline_java_demo_jar/demo.jar",
-		import com.example.demo.*;
-
-		static String run() {
-			return new HelloWorld().greet();
+	// 6. csharp! returning int[]
+	let nums: Vec<i32> = csharp! {
+		static int[] Run() {
+			return new int[] { 10, 20, 30, 40, 50 };
 		}
 	}
 	.unwrap();
-	println!("{imports_jar}");
+	println!("int[] from C#: {nums:?}");
 
-	let package: String = java! {
-		javac = "-sourcepath .",
-		package com.example.demo;
-
-		static String run() {
-			return new HelloWorld().greet();
+	// 7. csharp! returning List<string>
+	let words: Vec<String> = csharp! {
+		using System.Collections.Generic;
+		static List<string> Run() {
+			return new List<string> { "alpha", "beta", "gamma" };
 		}
 	}
 	.unwrap();
-	println!("{package}");
+	println!("List<string> from C#: {words:?}");
 
-	// explicit javac + java flags (runtime)
-	let explicit: String = java! {
-		javac = "-sourcepath .",
-		import com.example.demo.*;
-		static String run() {
-			return new HelloWorld().greet();
-		}
-	}
-	.unwrap();
-	println!("explicit javac sourcepath (java!): {explicit}");
+	// 8. ct_csharp! compile-time int array
+	println!("first 5 primes (ct_csharp): {PRIMES:?}");
 
-	// explicit javac + java flags (compile-time)
-	println!("explicit javac + java flags (ct_java!): {EXPLICIT_CT}");
+	// 9. ct_csharp! compile-time string array
+	println!("days (ct_csharp): {DAYS:?}");
 
-	// runtime int[]
-	let nums: Vec<i32> = java! {
-		static int[] run() {
-			return new int[]{10, 20, 30, 40, 50};
-		}
-	}
-	.unwrap();
-	println!("int[] from Java: {nums:?}");
-
-	// runtime List<String>
-	let words: Vec<String> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		static List<String> run() {
-			return Arrays.asList("alpha", "beta", "gamma");
-		}
-	}
-	.unwrap();
-	println!("List<String> from Java: {words:?}");
-
-	// compile-time int array baked into binary
-	println!("first 5 primes (ct_java): {PRIMES:?}");
-
-	// compile-time String array baked into binary
-	println!("days (ct_java): {DAYS:?}");
-
-	// compile-time Optional constants
+	// 10-11. ct_csharp! Optional (nullable) constants
 	assert_eq!(OPT_INT_SOME, Some(99));
 	assert_eq!(OPT_INT_NONE, None::<i32>);
-	assert_eq!(OPT_STR_SOME, Some("hello"));
-	assert_eq!(OPT_STR_NONE, None::<&str>);
-	println!("ct_java Optional<Integer> Some: {OPT_INT_SOME:?}");
-	println!("ct_java Optional<Integer> None: {OPT_INT_NONE:?}");
-	println!("ct_java Optional<String> Some: {OPT_STR_SOME:?}");
-	println!("ct_java Optional<String> None: {OPT_STR_NONE:?}");
+	assert_eq!(OPT_STR_SOME, Some(true));
+	assert_eq!(OPT_STR_NONE, None::<bool>);
+	println!("ct_csharp int? Some: {OPT_INT_SOME:?}");
+	println!("ct_csharp int? None: {OPT_INT_NONE:?}");
+	println!("ct_csharp bool? Some: {OPT_STR_SOME:?}");
+	println!("ct_csharp bool? None: {OPT_STR_NONE:?}");
 
-	// runtime Optional<Integer> return — present
-	let opt_int_some: Option<i32> = java! {
-		import java.util.Optional;
-		static Optional<Integer> run() {
-			return Optional.of(42);
+	// 12. csharp! runtime with int? return — present
+	let opt_int_some: Option<i32> = csharp! {
+		static int? Run() {
+			return 42;
 		}
 	}
 	.unwrap();
 	assert_eq!(opt_int_some, Some(42));
-	println!("Optional<Integer> present: {opt_int_some:?}");
+	println!("int? present: {opt_int_some:?}");
 
-	// runtime Optional<Integer> return — empty
-	let opt_int_none: Option<i32> = java! {
-		import java.util.Optional;
-		static Optional<Integer> run() {
-			return Optional.empty();
+	// 13. csharp! runtime with int? return — null
+	let opt_int_none: Option<i32> = csharp! {
+		static int? Run() {
+			return null;
 		}
 	}
 	.unwrap();
 	assert_eq!(opt_int_none, None);
-	println!("Optional<Integer> empty: {opt_int_none:?}");
+	println!("int? null: {opt_int_none:?}");
 
-	// runtime Optional<String> return — present
-	let opt_str_some: Option<String> = java! {
-		import java.util.Optional;
-		static Optional<String> run() {
-			return Optional.of("world");
+	// 14. csharp! runtime with double? return — present
+	let opt_dbl_some: Option<f64> = csharp! {
+		static double? Run() {
+			return 3.14;
 		}
 	}
 	.unwrap();
-	assert_eq!(opt_str_some.as_deref(), Some("world"));
-	println!("Optional<String> present: {opt_str_some:?}");
+	assert!(opt_dbl_some.is_some());
+	println!("double? present: {opt_dbl_some:?}");
 
-	// runtime Optional<String> return — empty
-	let opt_str_none: Option<String> = java! {
-		import java.util.Optional;
-		static Optional<String> run() {
-			return Optional.empty();
+	// 15. csharp! runtime with double? return — null
+	let opt_dbl_none: Option<f64> = csharp! {
+		static double? Run() {
+			return null;
 		}
 	}
 	.unwrap();
-	assert_eq!(opt_str_none, None);
-	println!("Optional<String> empty: {opt_str_none:?}");
+	assert_eq!(opt_dbl_none, None);
+	println!("double? null: {opt_dbl_none:?}");
 
-	// Optional<Integer> parameter — Some
-	let result_some: Option<i32> = java_fn! {
-		import java.util.Optional;
-		static Optional<Integer> run(Optional<Integer> val) {
-			return val.map(x -> x * 2);
+	// 16. csharp_fn! with int? param — Some value
+	let result_some: Option<i32> = csharp_fn! {
+		static int? Run(int? val) {
+			return val.HasValue ? val * 2 : null;
 		}
 	}(Some(21))
 	.unwrap();
 	assert_eq!(result_some, Some(42));
-	println!("Optional<Integer> param Some -> {result_some:?}");
+	println!("int? param Some -> {result_some:?}");
 
-	// Optional<Integer> parameter — None
-	let result_none: Option<i32> = java_fn! {
-		import java.util.Optional;
-		static Optional<Integer> run(Optional<Integer> val) {
-			return val.map(x -> x * 2);
+	// 17. csharp_fn! with int? param — None
+	let result_none: Option<i32> = csharp_fn! {
+		static int? Run(int? val) {
+			return val.HasValue ? val * 2 : null;
 		}
 	}(None)
 	.unwrap();
 	assert_eq!(result_none, None);
-	println!("Optional<Integer> param None -> {result_none:?}");
+	println!("int? param None -> {result_none:?}");
 
-	// Optional<String> parameter — Some
-	let result_str_some: Option<String> = java_fn! {
-		import java.util.Optional;
-		static Optional<String> run(Optional<String> val) {
-			return val.map(s -> s.toUpperCase());
+	// 18. csharp_fn! with bool? param — Some value
+	let result_bool_some: Option<bool> = csharp_fn! {
+		static bool? Run(bool? val) {
+			return val.HasValue ? !val.Value : null;
 		}
-	}(Some("hello"))
+	}(Some(true))
 	.unwrap();
-	assert_eq!(result_str_some.as_deref(), Some("HELLO"));
-	println!("Optional<String> param Some -> {result_str_some:?}");
+	assert_eq!(result_bool_some, Some(false));
+	println!("bool? param Some -> {result_bool_some:?}");
 
-	// Optional<String> parameter — None
-	let result_str_none: Option<String> = java_fn! {
-		import java.util.Optional;
-		static Optional<String> run(Optional<String> val) {
-			return val.map(s -> s.toUpperCase());
+	// 19. csharp_fn! with bool? param — None
+	let result_bool_none: Option<bool> = csharp_fn! {
+		static bool? Run(bool? val) {
+			return val.HasValue ? !val.Value : null;
 		}
 	}(None)
 	.unwrap();
-	assert_eq!(result_str_none, None);
-	println!("Optional<String> param None -> {result_str_none:?}");
+	assert_eq!(result_bool_none, None);
+	println!("bool? param None -> {result_bool_none:?}");
 }
 
-// compile-time with explicit javac and java flags
-const EXPLICIT_CT: i32 = ct_java! {
-	javac = "-sourcepath /tmp",
-	java = "-Xss512k",
-	static int run() {
-		return 1 + 1;
-	}
-};
-
-// Compile-time constant: evaluated during rustc macro expansion
-// Math.PI is baked into the binary; java is never invoked at runtime for this.
+// compile-time constant: System.Math.PI baked at compile time
 #[allow(clippy::approx_constant)]
-const PI_APPROX: f64 = ct_java! {
-	static double run() {
-		return Math.PI;
+const PI_APPROX: f64 = ct_csharp! {
+	static double Run() {
+		return System.Math.PI;
 	}
 };
 
 // compile-time int array
-const PRIMES: [i32; 5] = ct_java! {
-	static int[] run() {
-		return new int[]{2, 3, 5, 7, 11};
+const PRIMES: [i32; 5] = ct_csharp! {
+	static int[] Run() {
+		return new int[] { 2, 3, 5, 7, 11 };
 	}
 };
 
-// compile-time String array
-const DAYS: [&str; 3] = ct_java! {
-	static String[] run() {
-		return new String[]{"Mon", "Tue", "Wed"};
+// compile-time string array
+const DAYS: [&str; 3] = ct_csharp! {
+	static string[] Run() {
+		return new string[] { "Mon", "Tue", "Wed" };
 	}
 };
 
-// compile-time Optional<Integer> — present
-const OPT_INT_SOME: Option<i32> = ct_java! {
-	import java.util.Optional;
-	static Optional<Integer> run() {
-		return Optional.of(99);
+// compile-time int? — present
+const OPT_INT_SOME: Option<i32> = ct_csharp! {
+	static int? Run() {
+		return 99;
 	}
 };
 
-// compile-time Optional<Integer> — empty
-const OPT_INT_NONE: Option<i32> = ct_java! {
-	import java.util.Optional;
-	static Optional<Integer> run() {
-		return Optional.empty();
+// compile-time int? — null
+const OPT_INT_NONE: Option<i32> = ct_csharp! {
+	static int? Run() {
+		return null;
 	}
 };
 
-// compile-time Optional<String> — present
-const OPT_STR_SOME: Option<&str> = ct_java! {
-	import java.util.Optional;
-	static Optional<String> run() {
-		return Optional.of("hello");
+// compile-time bool? — present
+const OPT_STR_SOME: Option<bool> = ct_csharp! {
+	static bool? Run() {
+		return true;
 	}
 };
 
-// compile-time Optional<String> — empty
-const OPT_STR_NONE: Option<&str> = ct_java! {
-import java.util.Optional;
-static Optional<String> run() {
-	return Optional.empty();
-}};
+// compile-time bool? — null
+const OPT_STR_NONE: Option<bool> = ct_csharp! {
+	static bool? Run() {
+		return null;
+	}
+};

@@ -123,6 +123,27 @@ impl CsharpType {
 		}
 	}
 
+	/// Returns true for C# value types (scalars).
+	/// Value-type nullables (`int?`, `bool?`, …) use `.HasValue`/`.Value`.
+	/// Reference-type nullables (`string?`, `T[]?`, `List<T>?`) use `!= null`.
+	fn is_value_type(&self) -> bool {
+		matches!(
+			self,
+			Self::Sbyte
+				| Self::Byte
+				| Self::Short
+				| Self::Ushort
+				| Self::Int
+				| Self::Uint
+				| Self::Long
+				| Self::Ulong
+				| Self::Float
+				| Self::Double
+				| Self::Bool
+				| Self::Char
+		)
+	}
+
 	/// Returns the Rust return type token stream for this C# type.
 	fn rust_return_type_ts(&self) -> proc_macro2::TokenStream {
 		match self {
@@ -506,18 +527,35 @@ fn csharp_bw_write(ty: &CsharpType, var: &str, _depth: usize) -> String {
 		}
 		CsharpType::Nullable(inner) => {
 			let inner_cs_type = inner.csharp_type_name();
-			let ser_body = csharp_ser_element(inner, &format!("{var}.Value"), "_bw", 1);
-			format!(
-				"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
-				 \t\tif ({var}.HasValue) {{\n\
-				 \t\t\t_bw.Write((byte)1);\n\
-				 \t\t\t{inner_cs_type} _opt_val = {var}.Value;\n\
-				 \t\t\t{ser_body}\n\
-				 \t\t}} else {{\n\
-				 \t\t\t_bw.Write((byte)0);\n\
-				 \t\t}}\n\
-				 \t\t_bw.Flush();"
-			)
+			if inner.is_value_type() {
+				// Nullable<T> value type: .HasValue / .Value
+				let ser_body = csharp_ser_element(inner, &format!("{var}.Value"), "_bw", 1);
+				format!(
+					"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+					 \t\tif ({var}.HasValue) {{\n\
+					 \t\t\t_bw.Write((byte)1);\n\
+					 \t\t\t{inner_cs_type} _opt_val = {var}.Value;\n\
+					 \t\t\t{ser_body}\n\
+					 \t\t}} else {{\n\
+					 \t\t\t_bw.Write((byte)0);\n\
+					 \t\t}}\n\
+					 \t\t_bw.Flush();"
+				)
+			} else {
+				// Nullable reference type (string?, T[]?, List<T>?): != null check
+				let ser_body = csharp_ser_element(inner, "_opt_val", "_bw", 1);
+				format!(
+					"BinaryWriter _bw = new BinaryWriter(Console.OpenStandardOutput());\n\
+					 \t\tif ({var} != null) {{\n\
+					 \t\t\t_bw.Write((byte)1);\n\
+					 \t\t\t{inner_cs_type} _opt_val = ({inner_cs_type}){var}!;\n\
+					 \t\t\t{ser_body}\n\
+					 \t\t}} else {{\n\
+					 \t\t\t_bw.Write((byte)0);\n\
+					 \t\t}}\n\
+					 \t\t_bw.Flush();"
+				)
+			}
 		}
 		// All other scalars: BinaryWriter.Write with cast
 		_ => {
@@ -571,15 +609,27 @@ fn csharp_ser_element(ty: &CsharpType, var: &str, bw_name: &str, depth: usize) -
 			let inner_cs_type = inner.csharp_type_name();
 			let opt_inner_var = format!("_opt_inner{depth}");
 			let inner_ser = csharp_ser_element(inner, &opt_inner_var, bw_name, depth + 1);
-			format!(
-				"if (({var}).HasValue) {{\n\
-				 \t\t\t\t{bw_name}.Write((byte)1);\n\
-				 \t\t\t\t{inner_cs_type} {opt_inner_var} = ({var}).Value;\n\
-				 \t\t\t\t{inner_ser}\n\
-				 \t\t\t}} else {{\n\
-				 \t\t\t\t{bw_name}.Write((byte)0);\n\
-				 \t\t\t}}"
-			)
+			if inner.is_value_type() {
+				format!(
+					"if (({var}).HasValue) {{\n\
+					 \t\t\t\t{bw_name}.Write((byte)1);\n\
+					 \t\t\t\t{inner_cs_type} {opt_inner_var} = ({var}).Value;\n\
+					 \t\t\t\t{inner_ser}\n\
+					 \t\t\t}} else {{\n\
+					 \t\t\t\t{bw_name}.Write((byte)0);\n\
+					 \t\t\t}}"
+				)
+			} else {
+				format!(
+					"if (({var}) != null) {{\n\
+					 \t\t\t\t{bw_name}.Write((byte)1);\n\
+					 \t\t\t\t{inner_cs_type} {opt_inner_var} = ({inner_cs_type})({var})!;\n\
+					 \t\t\t\t{inner_ser}\n\
+					 \t\t\t}} else {{\n\
+					 \t\t\t\t{bw_name}.Write((byte)0);\n\
+					 \t\t\t}}"
+				)
+			}
 		}
 		// Non-string scalars
 		_ => {

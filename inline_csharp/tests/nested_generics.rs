@@ -1,24 +1,29 @@
-// Tests for return types where arrays appear *inside* generic type parameters,
-// e.g. List<Optional<String[]>>. The macro's type parser must handle `[]`
-// suffixes that appear before a closing `>` or `>>`.
+// Tests for nested generic return types that involve reference-type nullables.
+// These are faithful C# translations of the Java tests that used Optional<T>
+// with List and array types.
 //
-// All tests in this file are currently Red (implementation not yet complete).
+// C# nullable mapping:
+//   Java Optional<T>          → C# T?  (nullable)
+//   Java List<T>              → C# List<T>  → Rust Vec<T>
+//   Java T[]                  → C# T[]      → Rust Vec<T>
+//   Java Optional<List<T>>    → C# List<T>? → Rust Option<Vec<T>>
+//   Java List<Optional<T>>    → C# List<T?> → Rust Vec<Option<T>>
 
-use inline_java::java;
+use inline_csharp::csharp;
 
-// List<Optional<String[]>> → Vec<Option<Vec<String>>>
+// ── List<string[]?> — list of nullable string arrays ─────────────────────────
+// Java: List<Optional<String[]>>
+
 #[test]
-fn java_runtime_list_of_optional_string_array() {
-	let v: Vec<Option<Vec<String>>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static List<Optional<String[]>> run() {
-			return Arrays.asList(
-				Optional.of(new String[]{"a", "b"}),
-				Optional.empty(),
-				Optional.of(new String[]{"c"})
-			);
+fn csharp_runtime_list_of_nullable_string_array() {
+	let v: Vec<Option<Vec<String>>> = csharp! {
+		using System.Collections.Generic;
+		static List<string[]?> Run() {
+			return new List<string[]?> {
+				new string[] { "a", "b" },
+				null,
+				new string[] { "c" }
+			};
 		}
 	}
 	.unwrap();
@@ -32,110 +37,122 @@ fn java_runtime_list_of_optional_string_array() {
 	);
 }
 
-// Optional<List<Integer>> → Option<Vec<i32>>
+// ── List<int>? present — nullable list of ints present ───────────────────────
+// Java: Optional<List<Integer>> present
+
 #[test]
-fn java_runtime_optional_list_integer_present() {
-	let v: Option<Vec<i32>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Integer>> run() {
-			return Optional.of(Arrays.asList(1, 2, 3));
+fn csharp_runtime_nullable_list_int_present() {
+	let v: Option<Vec<i32>> = csharp! {
+		using System.Collections.Generic;
+		static List<int>? Run() {
+			return new List<int> { 1, 2, 3 };
 		}
 	}
 	.unwrap();
-	assert_eq!(v, Some(vec![1, 2, 3]));
+	assert_eq!(v, Some(vec![1i32, 2, 3]));
 }
 
-#[test]
-fn java_runtime_optional_list_integer_absent() {
-	let v: Option<Vec<i32>> = java! {
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Integer>> run() {
-			return Optional.empty();
-		}
-	}
-	.unwrap();
-	assert_eq!(v, None);
-}
-
-// Optional<List<Optional<Integer>>> → Option<Vec<Option<i32>>>
-#[test]
-fn java_runtime_optional_list_of_optional_integer_present() {
-	let v: Option<Vec<Option<i32>>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Optional<Integer>>> run() {
-			return Optional.of(Arrays.asList(
-				Optional.of(1),
-				Optional.empty(),
-				Optional.of(3)
-			));
-		}
-	}
-	.unwrap();
-	assert_eq!(v, Some(vec![Some(1), None, Some(3)]));
-}
+// ── List<int>? absent — nullable list of ints absent ─────────────────────────
+// Java: Optional<List<Integer>> absent
 
 #[test]
-fn java_runtime_optional_list_of_optional_integer_absent() {
-	let v: Option<Vec<Option<i32>>> = java! {
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Optional<Integer>>> run() {
-			return Optional.empty();
+fn csharp_runtime_nullable_list_int_absent() {
+	let v: Option<Vec<i32>> = csharp! {
+		using System.Collections.Generic;
+		static List<int>? Run() {
+			return null;
 		}
 	}
 	.unwrap();
 	assert_eq!(v, None);
 }
 
-// Optional<List<Optional<Integer[]>>> → Option<Vec<Option<Vec<i32>>>>
+// ── List<int?>? present — nullable list of nullable ints present ──────────────
+// Java: Optional<List<Optional<Integer>>> present
+
 #[test]
-fn java_runtime_optional_list_of_optional_integer_array_present() {
-	let v: Option<Vec<Option<Vec<i32>>>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Optional<Integer[]>>> run() {
-			return Optional.of(Arrays.asList(
-				Optional.of(new Integer[]{1, 2}),
-				Optional.empty(),
-				Optional.of(new Integer[]{3, 4, 5})
-			));
+fn csharp_runtime_nullable_list_of_nullable_int_present() {
+	let v: Option<Vec<Option<i32>>> = csharp! {
+		using System.Collections.Generic;
+		static List<int?>? Run() {
+			return new List<int?> { 1, null, 3 };
 		}
 	}
 	.unwrap();
-	assert_eq!(v, Some(vec![Some(vec![1, 2]), None, Some(vec![3, 4, 5])]));
+	assert_eq!(v, Some(vec![Some(1i32), None, Some(3)]));
 }
 
+// ── List<int?>? absent — nullable list of nullable ints absent ────────────────
+// Java: Optional<List<Optional<Integer>>> absent
+
 #[test]
-fn java_runtime_optional_list_of_optional_integer_array_absent() {
-	let v: Option<Vec<Option<Vec<i32>>>> = java! {
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Optional<Integer[]>>> run() {
-			return Optional.empty();
+fn csharp_runtime_nullable_list_of_nullable_int_absent() {
+	let v: Option<Vec<Option<i32>>> = csharp! {
+		using System.Collections.Generic;
+		static List<int?>? Run() {
+			return null;
 		}
 	}
 	.unwrap();
 	assert_eq!(v, None);
 }
 
-// Optional<List<Optional<String[][]>>> → Option<Vec<Option<Vec<Vec<String>>>>>
+// ── List<int[]?>? present — nullable list of nullable int arrays present ──────
+// Java: Optional<List<Optional<Integer[]>>> present
+
 #[test]
-fn java_runtime_optional_list_of_optional_string_2d_array_present() {
-	let v: Option<Vec<Option<Vec<Vec<String>>>>> = java! {
-		import java.util.Arrays;
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Optional<String[][]>>> run() {
-			return Optional.of(Arrays.asList(
-				Optional.of(new String[][]{{"a", "b"}, {"c"}}),
-				Optional.empty()
-			));
+fn csharp_runtime_nullable_list_of_nullable_int_array_present() {
+	let v: Option<Vec<Option<Vec<i32>>>> = csharp! {
+		using System.Collections.Generic;
+		static List<int[]?>? Run() {
+			return new List<int[]?> {
+				new int[] { 10, 20 },
+				null,
+				new int[] { 30 }
+			};
+		}
+	}
+	.unwrap();
+	assert_eq!(
+		v,
+		Some(vec![
+			Some(vec![10i32, 20]),
+			None,
+			Some(vec![30i32]),
+		])
+	);
+}
+
+// ── List<int[]?>? absent — nullable list of nullable int arrays absent ────────
+// Java: Optional<List<Optional<Integer[]>>> absent
+
+#[test]
+fn csharp_runtime_nullable_list_of_nullable_int_array_absent() {
+	let v: Option<Vec<Option<Vec<i32>>>> = csharp! {
+		using System.Collections.Generic;
+		static List<int[]?>? Run() {
+			return null;
+		}
+	}
+	.unwrap();
+	assert_eq!(v, None);
+}
+
+// ── List<string[][]?>? present — nullable list of nullable 2D string arrays ───
+// Java: Optional<List<Optional<String[][]>>> present
+
+#[test]
+fn csharp_runtime_nullable_list_of_nullable_2d_string_array_present() {
+	let v: Option<Vec<Option<Vec<Vec<String>>>>> = csharp! {
+		using System.Collections.Generic;
+		static List<string[][]?>? Run() {
+			return new List<string[][]?> {
+				new string[][] {
+					new string[] { "foo", "bar" },
+					new string[] { "baz" }
+				},
+				null
+			};
 		}
 	}
 	.unwrap();
@@ -143,21 +160,23 @@ fn java_runtime_optional_list_of_optional_string_2d_array_present() {
 		v,
 		Some(vec![
 			Some(vec![
-				vec!["a".to_string(), "b".to_string()],
-				vec!["c".to_string()],
+				vec!["foo".to_string(), "bar".to_string()],
+				vec!["baz".to_string()],
 			]),
 			None,
 		])
 	);
 }
 
+// ── List<string[][]?>? absent — nullable list of nullable 2D string arrays ────
+// Java: Optional<List<Optional<String[][]>>> absent
+
 #[test]
-fn java_runtime_optional_list_of_optional_string_2d_array_absent() {
-	let v: Option<Vec<Option<Vec<Vec<String>>>>> = java! {
-		import java.util.List;
-		import java.util.Optional;
-		static Optional<List<Optional<String[][]>>> run() {
-			return Optional.empty();
+fn csharp_runtime_nullable_list_of_nullable_2d_string_array_absent() {
+	let v: Option<Vec<Option<Vec<Vec<String>>>>> = csharp! {
+		using System.Collections.Generic;
+		static List<string[][]?>? Run() {
+			return null;
 		}
 	}
 	.unwrap();
