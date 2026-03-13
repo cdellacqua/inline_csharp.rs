@@ -269,3 +269,44 @@ fn csharp_fn_arg_nullable_list_of_nullable_int_array_absent() {
 	.unwrap();
 	assert_eq!(v, None);
 }
+
+// List<string[][]?>? present as input → Option<Vec<Option<Vec<Vec<String>>>>> present
+// Java: Optional<List<Optional<String[][]>>> present as input
+#[test]
+fn csharp_fn_arg_nullable_list_of_nullable_2d_string_array_present() {
+	let row0: &[&str] = &["a", "b"];
+	let row1: &[&str] = &["c"];
+	let arr0: &[&[&str]] = &[row0, row1];
+	let inner: &[Option<&[&[&str]]>] = &[Some(arr0), None];
+	let v: Option<Vec<Option<Vec<Vec<String>>>>> = csharp_fn! {
+		using System.Collections.Generic;
+		static List<string[][]?>? Run(List<string[][]?>? v) {
+			return v;
+		}
+	}(Some(inner))
+	.unwrap();
+	assert_eq!(
+		v,
+		Some(vec![
+			Some(vec![
+				vec!["a".to_string(), "b".to_string()],
+				vec!["c".to_string()],
+			]),
+			None,
+		])
+	);
+}
+
+// List<string[][]?>? absent as input → Option<Vec<Option<Vec<Vec<String>>>>> absent
+// Java: Optional<List<Optional<String[][]>>> absent as input
+#[test]
+fn csharp_fn_arg_nullable_list_of_nullable_2d_string_array_absent() {
+	let v: Option<Vec<Option<Vec<Vec<String>>>>> = csharp_fn! {
+		using System.Collections.Generic;
+		static List<string[][]?>? Run(List<string[][]?>? v) {
+			return v;
+		}
+	}(None::<&[Option<&[&[&str]]>]>)
+	.unwrap();
+	assert_eq!(v, None);
+}

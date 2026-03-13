@@ -103,6 +103,61 @@ fn ct_csharp_build_flag() {
 	assert_eq!(CT_BUILD_FLAG, 2);
 }
 
+// run = "..." : single runtime arg passed to the DLL process
+
+#[test]
+fn csharp_runtime_run_flag() {
+	let val: Result<String, _> = csharp! {
+		run = "hello",
+		static string Run() {
+			return System.Environment.GetCommandLineArgs()[1];
+		}
+	};
+	assert_eq!(val, Ok("hello".to_string()));
+}
+
+// run = "..." : multiple runtime args split on whitespace
+
+#[test]
+fn csharp_runtime_multiple_run_flags() {
+	let val: Result<String, _> = csharp! {
+		run = "foo bar",
+		static string Run() {
+			var args = System.Environment.GetCommandLineArgs();
+			return args[1] + " " + args[2];
+		}
+	};
+	assert_eq!(val, Ok("foo bar".to_string()));
+}
+
+// build = "..." + run = "..." : both flags work together
+
+#[test]
+fn csharp_runtime_build_and_run_flags() {
+	let val: Result<String, _> = csharp! {
+		build = "--nologo",
+		run = "combined",
+		static string Run() {
+			return System.Environment.GetCommandLineArgs()[1];
+		}
+	};
+	assert_eq!(val, Ok("combined".to_string()));
+}
+
+// ct_csharp! with run = "..."
+
+const CT_RUN_FLAG: &str = ct_csharp! {
+	run = "ct42",
+	static string Run() {
+		return System.Environment.GetCommandLineArgs()[1];
+	}
+};
+
+#[test]
+fn ct_csharp_run_flag() {
+	assert_eq!(CT_RUN_FLAG, "ct42");
+}
+
 // reference = "..." : call into an external DLL (C# class library)
 
 #[test]
