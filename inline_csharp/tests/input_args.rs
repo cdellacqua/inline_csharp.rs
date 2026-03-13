@@ -297,6 +297,26 @@ fn csharp_fn_arg_nullable_list_of_nullable_2d_string_array_present() {
 	);
 }
 
+// ── Unicode string round-trip ─────────────────────────────────────────────────
+
+// Unicode strings: Rust → C# → Rust round-trip with transformation.
+// C# reverses the input string by Unicode scalar values (Runes) and returns it.
+#[test]
+fn csharp_fn_unicode_string_round_trip() {
+	let input = "Hello, 世界! 🦀→☕";
+	let reversed: String = csharp_fn! {
+		using System.Linq;
+		using System.Text;
+		static string Run(string s) {
+			return string.Concat(s.EnumerateRunes().Reverse().Select(r => r.ToString()));
+		}
+	}(input)
+	.unwrap();
+	// Rust-side expected: reverse code-point by code-point
+	let expected: String = input.chars().rev().collect();
+	assert_eq!(reversed, expected);
+}
+
 // List<string[][]?>? absent as input → Option<Vec<Option<Vec<Vec<String>>>>> absent
 // Java: Optional<List<Optional<String[][]>>> absent as input
 #[test]
