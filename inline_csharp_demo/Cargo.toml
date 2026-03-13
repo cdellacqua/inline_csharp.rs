@@ -1,8 +1,8 @@
 [package]
-name = "inline_java_demo"
+name = "inline_csharp_demo"
 version.workspace = true
 edition.workspace = true
 publish = false
 
 [dependencies]
-inline_java = { path = "../inline_java" }
+inline_csharp = { path = "../inline_csharp" }

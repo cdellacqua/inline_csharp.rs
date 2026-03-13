@@ -1,16 +1,16 @@
 [package]
-name = "inline_java"
+name = "inline_csharp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Embed Java directly in Rust — evaluated at program runtime or at compile time"
+description = "Embed C# directly in Rust — evaluated at program runtime or at compile time"
 keywords.workspace = true
 categories = ["development-tools::ffi", "api-bindings"]
 readme = "../README.md"
 
 [dependencies]
-inline_java_core = { version = "0.1.0", path = "../inline_java_core" }
-inline_java_macros = { version = "0.1.0", path = "../inline_java_macros" }
+inline_csharp_core = { version = "0.1.0", path = "../inline_csharp_core" }
+inline_csharp_macros = { version = "0.1.0", path = "../inline_csharp_macros" }

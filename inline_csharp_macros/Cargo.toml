@@ -1,12 +1,12 @@
 [package]
-name = "inline_java_macros"
+name = "inline_csharp_macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Proc-macro implementation for inline_java — not intended for direct use"
+description = "Proc-macro implementation for inline_csharp — not intended for direct use"
 keywords.workspace = true
 categories = ["development-tools::procedural-macro-helpers"]
 readme = "README.md"
@@ -15,7 +15,7 @@ readme = "README.md"
 proc-macro = true
 
 [dependencies]
-inline_java_core = { version = "0.1.0", path = "../inline_java_core" }
+inline_csharp_core = { version = "0.1.0", path = "../inline_csharp_core" }
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
 quote = "1.0.44"
 litrs = { version = "1.0.0", features = ["proc-macro2"] }
